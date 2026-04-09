@@ -663,10 +663,10 @@ export default function App() {
     function openInCanva(format: CanvaFormat) {
         setCanvaDialog(false);
         if (format === "original") {
-            window.open("https://www.canva.com/design/new", "_blank");
+            window.open("https://www.canva.com/create/design", "_blank");
         } else {
             const { w, h } = CANVA_DIMS[format];
-            window.open(`https://www.canva.com/design/new?width=${w}&height=${h}&units=px`, "_blank");
+            window.open(`https://www.canva.com/create/design?width=${w}&height=${h}`, "_blank");
         }
     }
 
