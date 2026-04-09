@@ -648,11 +648,13 @@ export default function App() {
 
     type CanvaFormat = "1:1" | "4:5" | "16:9" | "9:16" | "original";
 
-    const CANVA_DIMS: Record<Exclude<CanvaFormat, "original">, { w: number; h: number }> = {
-        "1:1": { w: 1080, h: 1080 },
-        "4:5": { w: 1080, h: 1350 },
-        "16:9": { w: 1920, h: 1080 },
-        "9:16": { w: 1080, h: 1920 },
+    // Canva design type IDs for preset sizes
+    const CANVA_TYPES: Record<CanvaFormat, { label: string; url: string }> = {
+        "1:1": { label: "1:1 (Instagram post)", url: "https://www.canva.com/instagram-posts/templates/" },
+        "4:5": { label: "4:5 (Instagram portrét)", url: "https://www.canva.com/instagram-posts/templates/" },
+        "16:9": { label: "16:9 (Prezentace)", url: "https://www.canva.com/presentations/templates/" },
+        "9:16": { label: "9:16 (Instagram story)", url: "https://www.canva.com/instagram-stories/templates/" },
+        "original": { label: "Originál", url: "https://www.canva.com/" },
     };
 
     function openCanvaDialog(file: DriveFile) {
@@ -662,12 +664,7 @@ export default function App() {
 
     function openInCanva(format: CanvaFormat) {
         setCanvaDialog(false);
-        if (format === "original") {
-            window.open("https://www.canva.com/create/design", "_blank");
-        } else {
-            const { w, h } = CANVA_DIMS[format];
-            window.open(`https://www.canva.com/create/design?width=${w}&height=${h}`, "_blank");
-        }
+        window.open(CANVA_TYPES[format].url, "_blank");
     }
 
     // ── AI Search ──
@@ -1436,16 +1433,16 @@ export default function App() {
                         <h2>Otevřít v Canvě</h2>
                         <p className="dialog-desc"><strong>{canvaFile.name}</strong><br />Vyber formát projektu v Canvě.</p>
                         <div className="ratio-grid">
-                            {(["1:1", "4:5", "16:9", "9:16"] as const).map((r) => (
+                            {(["1:1", "4:5", "16:9", "9:16", "original"] as const).map((r) => (
                                 <button key={r} className="ratio-card" onClick={() => openInCanva(r)}>
-                                    <div className={`ratio-preview ratio-preview-${r.replace(":", "x")}`} />
-                                    <span className="ratio-label">{r}</span>
+                                    {r !== "original" ? (
+                                        <div className={`ratio-preview ratio-preview-${r.replace(":", "x")}`} />
+                                    ) : (
+                                        <div className="ratio-preview" style={{ width: 40, height: 30, borderRadius: 4 }} />
+                                    )}
+                                    <span className="ratio-label">{CANVA_TYPES[r].label}</span>
                                 </button>
                             ))}
-                            <button className="ratio-card" onClick={() => openInCanva("original")}>
-                                <div className="ratio-preview" style={{ width: 40, height: 30, borderRadius: 4 }} />
-                                <span className="ratio-label">Originál</span>
-                            </button>
                         </div>
                         <div className="dialog-actions">
                             <button className="btn btn-ghost" onClick={() => setCanvaDialog(false)}>Zrušit</button>
