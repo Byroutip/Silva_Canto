@@ -34,6 +34,8 @@ import {
     refreshAllUpdates,
     getStoredUpdates,
     askMarketingQuestion,
+    fetchBaseline,
+    hasBaseline,
     type AlgorithmUpdate,
     type MarketingQuery,
 } from "./lib/marketing";
@@ -191,7 +193,7 @@ export default function App() {
     const [mktAnswer, setMktAnswer] = useState<MarketingQuery | null>(null);
     const [mktAskLoading, setMktAskLoading] = useState(false);
     const [mktExpandedId, setMktExpandedId] = useState<string | null>(null);
-    const [mktFilter, setMktFilter] = useState<"all" | "facebook" | "instagram">("all");
+    const [mktFilter, setMktFilter] = useState<"all" | "facebook" | "instagram" | "baseline">("all");
 
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const folderCache = useRef<Map<string, { data: DriveFile[]; ts: number }>>(new Map());
@@ -745,8 +747,21 @@ export default function App() {
         try {
             const stored = await getStoredUpdates(db);
             setMktUpdates(stored);
+
+            // Auto-fetch baseline if first time (no data yet)
+            const apiKey = geminiKey();
+            if (!hasBaseline(stored) && apiKey) {
+                setMktProgress("Stahuji aktuální stav algoritmů…");
+                await fetchBaseline(db, apiKey, (msg) => setMktProgress(msg));
+                const updated = await getStoredUpdates(db);
+                setMktUpdates(updated);
+                setMktProgress("");
+                setMessage("Stažen kompletní přehled aktuálních algoritmů.");
+            }
         } catch (error) {
             console.error("Failed to load marketing updates:", error);
+            setMktProgress("");
+            setMessage(getErrorMessage(error));
         } finally {
             setMktLoading(false);
         }
@@ -787,8 +802,10 @@ export default function App() {
     }
 
     const filteredMktUpdates = mktFilter === "all"
-        ? mktUpdates
-        : mktUpdates.filter(u => u.platform === mktFilter);
+        ? mktUpdates.filter(u => !u.id.startsWith("baseline-"))
+        : mktFilter === "baseline"
+            ? mktUpdates.filter(u => u.id.startsWith("baseline-"))
+            : mktUpdates.filter(u => u.platform === mktFilter && !u.id.startsWith("baseline-"));
 
     // ── Effects ──
 
@@ -1207,6 +1224,12 @@ export default function App() {
                                         className={`mkt-filter-tab ${mktFilter === "instagram" ? "mkt-filter-active" : ""}`}
                                         onClick={() => setMktFilter("instagram")}
                                     >Instagram</button>
+                                    {mktUpdates.some(u => u.id.startsWith("baseline-")) && (
+                                        <button
+                                            className={`mkt-filter-tab ${mktFilter === "baseline" ? "mkt-filter-active" : ""}`}
+                                            onClick={() => setMktFilter("baseline")}
+                                        >Jak fungují algoritmy</button>
+                                    )}
                                 </div>
                                 {mktUpdates.length > 0 && (
                                     <span className="mkt-update-count">{filteredMktUpdates.length} novinek</span>

@@ -205,6 +205,75 @@ Nepoužívej odborný žargon. Mluv jednoduše.`;
     return { question, answer: text, sources };
 }
 
+// ── Fetch baseline: current state of algorithms ──
+
+async function scrapeCurrentAlgorithm(
+    platform: Platform,
+    apiKey: string
+): Promise<AlgorithmUpdate[]> {
+    const platformName = platform === "facebook" ? "Facebook" : "Instagram";
+
+    const prompt = `Popiš KOMPLETNĚ jak aktuálně (rok 2025/2026) funguje algoritmus ${platformName}. Rozděl to do hlavních oblastí.
+
+Pro každou oblast odpověz ve formátu:
+
+---ITEM---
+TITLE: [název oblasti, např. "Řazení příspěvků ve feedu" nebo "Dosah Reels"]
+DATE: ${new Date().toISOString().split("T")[0]}
+SUMMARY: [vysvětli jednoduše jak tato část algoritmu funguje. Piš česky, lidsky, jako bys vysvětloval kamarádovi co dělá marketing na sítích. 3-4 věty. Žádný žargon.]
+DETAILS: [podrobnější vysvětlení s praktickými tipy. Co konkrétně ovlivňuje úspěch v této oblasti? Jaké metriky algoritmus sleduje? Co dělat a nedělat? 5-8 vět česky, jednoduše.]
+TAGS: [klíčová slova oddělená čárkou, česky]
+---END---
+
+Pokryj tyto oblasti:
+- Jak funguje feed (řazení příspěvků)
+- Stories algoritmus
+- Reels / Videa algoritmus
+- Engagement signály (co algoritmus měří)
+- Dosah a viditelnost
+- Hashtags a discovery
+- Nejlepší čas na postování
+- Tipy pro růst
+
+Odpovídej POUZE ve formátu výše.`;
+
+    const { text, sources } = await geminiWithSearch(prompt, apiKey);
+    const updates = parseUpdates(text, platform, sources);
+    // Mark these as baseline items
+    return updates.map(u => ({
+        ...u,
+        id: `baseline-${u.id}`,
+        tags: [...u.tags, "základ", "jak-funguje"],
+    }));
+}
+
+export async function fetchBaseline(
+    db: Firestore,
+    apiKey: string,
+    onProgress?: (msg: string) => void
+): Promise<AlgorithmUpdate[]> {
+    const all: AlgorithmUpdate[] = [];
+
+    onProgress?.("Stahuji jak funguje algoritmus Facebooku…");
+    const fb = await scrapeCurrentAlgorithm("facebook", apiKey);
+    all.push(...fb);
+
+    onProgress?.("Stahuji jak funguje algoritmus Instagramu…");
+    const ig = await scrapeCurrentAlgorithm("instagram", apiKey);
+    all.push(...ig);
+
+    onProgress?.("Ukládám…");
+    await saveUpdates(db, all);
+
+    return all;
+}
+
+// ── Check if baseline exists ──
+
+export function hasBaseline(updates: AlgorithmUpdate[]): boolean {
+    return updates.some(u => u.id.startsWith("baseline-"));
+}
+
 // ── Full refresh: scrape both platforms ──
 
 export async function refreshAllUpdates(
