@@ -1239,6 +1239,38 @@ body { margin: 0; }
 }
 
 /* ═══════════════════════════════════════════
+   Drag & Drop Upload
+   ═══════════════════════════════════════════ */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(79, 70, 229, 0.12);
+  backdrop-filter: blur(4px);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: overlay-in 0.15s ease;
+}
+
+.drop-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 48px 64px;
+  background: var(--surface);
+  border: 3px dashed var(--accent);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════
    AI Search
    ═══════════════════════════════════════════ */
 

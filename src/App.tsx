@@ -352,18 +352,66 @@ export default function App() {
         finally { setLoading(false); }
     }
 
-    // ── Upload ──
+    // ── Upload (multi-file + drag & drop) ──
 
-    async function handleFileChange(file?: File | null) {
-        if (!file) return;
+    const [uploadProgress, setUploadProgress] = useState("");
+    const [dragOver, setDragOver] = useState(false);
+
+    async function uploadFiles(fileList: File[]) {
+        if (fileList.length === 0) return;
         setLoading(true); setMessage("");
+        const total = fileList.length;
+        let uploaded = 0;
+        let errors = 0;
         try {
-            await uploadToDrive(accessToken, file, currentFolderId);
+            for (const file of fileList) {
+                setUploadProgress(`Nahrávám ${file.name} (${uploaded + 1}/${total})…`);
+                try {
+                    await uploadToDrive(accessToken, file, currentFolderId);
+                    uploaded++;
+                } catch (err) {
+                    console.warn(`Upload failed for ${file.name}:`, err);
+                    errors++;
+                }
+            }
             folderCache.current.delete(currentFolderId);
             await loadFolder(currentFolderId, breadcrumbs);
-            setMessage(`"${file.name}" nahráno.`);
+            const msg = uploaded === 1
+                ? `"${fileList[0].name}" nahráno.`
+                : `Nahráno ${uploaded} souborů${errors > 0 ? ` (${errors} selhalo)` : ""}.`;
+            setMessage(msg);
         } catch (error) { setMessage(getErrorMessage(error)); }
-        finally { setLoading(false); }
+        finally { setLoading(false); setUploadProgress(""); }
+    }
+
+    function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        uploadFiles(Array.from(files));
+        e.target.value = ""; // reset input
+    }
+
+    function handleDrop(e: React.DragEvent) {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+        if (screen !== "browser") return;
+        const files = Array.from(e.dataTransfer.files).filter(f =>
+            f.type.startsWith("image/") || f.type.startsWith("video/")
+        );
+        if (files.length > 0) uploadFiles(files);
+    }
+
+    function handleDragOver(e: React.DragEvent) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (screen === "browser") setDragOver(true);
+    }
+
+    function handleDragLeave(e: React.DragEvent) {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
     }
 
     // ── Selection ──
@@ -708,7 +756,12 @@ export default function App() {
     // ── Render ──
 
     return (
-        <div className="app-shell">
+        <div
+            className="app-shell"
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+        >
             {/* ── Login ── */}
             {screen === "login" && (
                 <div className="login-wrapper">
@@ -905,8 +958,8 @@ export default function App() {
                                         {Icons.uploadSm} Nahrát
                                     </button>
                                     <input
-                                        ref={fileInputRef} type="file" accept="image/*,video/*"
-                                        onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
+                                        ref={fileInputRef} type="file" accept="image/*,video/*" multiple
+                                        onChange={handleFileInputChange}
                                         style={{ display: "none" }}
                                     />
                                 </div>
@@ -999,11 +1052,21 @@ export default function App() {
                         </div>
                     )}
 
+                    {/* Drag & drop overlay */}
+                    {dragOver && screen === "browser" && (
+                        <div className="drop-overlay">
+                            <div className="drop-overlay-content">
+                                {Icons.upload}
+                                <span>Přetáhni soubory sem</span>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Toast */}
                     {(loading || message) && (
                         <div className={`toast ${loading ? "toast-loading" : ""}`}>
                             {loading && <span className="spinner" />}
-                            <span>{loading ? (convertProgress || "Probíhá akce…") : message}</span>
+                            <span>{loading ? (uploadProgress || convertProgress || "Probíhá akce…") : message}</span>
                         </div>
                     )}
                 </div>
