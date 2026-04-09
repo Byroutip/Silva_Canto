@@ -178,7 +178,7 @@ export async function saveUpdates(
 
 export async function getStoredUpdates(
     db: Firestore,
-    maxCount = 50
+    maxCount = 500
 ): Promise<AlgorithmUpdate[]> {
     const q = query(
         collection(db, COLLECTION),
@@ -292,18 +292,21 @@ export async function refreshAllUpdates(
     apiKey: string,
     onProgress?: (msg: string) => void
 ): Promise<AlgorithmUpdate[]> {
-    const all: AlgorithmUpdate[] = [];
+    const newUpdates: AlgorithmUpdate[] = [];
 
     onProgress?.("Hledám novinky z Facebooku…");
     const fbUpdates = await scrapeAlgorithmChanges("facebook", apiKey);
-    all.push(...fbUpdates);
+    newUpdates.push(...fbUpdates);
 
     onProgress?.("Hledám novinky z Instagramu…");
     const igUpdates = await scrapeAlgorithmChanges("instagram", apiKey);
-    all.push(...igUpdates);
+    newUpdates.push(...igUpdates);
 
-    onProgress?.("Ukládám…");
-    await saveUpdates(db, all);
+    onProgress?.("Ukládám novinky…");
+    await saveUpdates(db, newUpdates);
 
+    // Return all stored updates (old + new merged)
+    onProgress?.("Načítám kompletní historii…");
+    const all = await getStoredUpdates(db);
     return all;
 }

@@ -797,11 +797,11 @@ export default function App() {
         if (!apiKey) { setMessage("Chybí Gemini API klíč."); return; }
         setMktLoading(true); setMktProgress("");
         try {
-            const updates = await refreshAllUpdates(db, apiKey, (msg) => setMktProgress(msg));
-            const stored = await getStoredUpdates(db);
-            setMktUpdates(stored);
+            const allUpdates = await refreshAllUpdates(db, apiKey, (msg) => setMktProgress(msg));
+            setMktUpdates(allUpdates);
             setMktProgress("");
-            setMessage(`Nalezeno ${updates.length} novinek.`);
+            const newCount = allUpdates.filter(u => !u.id.startsWith("baseline-")).length;
+            setMessage(`Celkem ${newCount} novinek v historii.`);
         } catch (error) {
             setMktProgress("");
             setMessage(getErrorMessage(error));
@@ -827,10 +827,10 @@ export default function App() {
     }
 
     const filteredMktUpdates = mktFilter === "all"
-        ? mktUpdates.filter(u => !u.id.startsWith("baseline-"))
+        ? mktUpdates
         : mktFilter === "baseline"
             ? mktUpdates.filter(u => u.id.startsWith("baseline-"))
-            : mktUpdates.filter(u => u.platform === mktFilter && !u.id.startsWith("baseline-"));
+            : mktUpdates.filter(u => u.platform === mktFilter);
 
     // ── Effects ──
 
