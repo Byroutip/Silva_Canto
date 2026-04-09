@@ -7,13 +7,7 @@ const CANVA_CLIENT_ID = "OC-AZ1zT6lLCKyQ";
 const CANVA_AUTH_URL = "https://www.canva.com/api/oauth/authorize";
 const CANVA_SCOPES = "asset:write design:content:write design:content:read";
 
-// Detect Cloud Functions base URL
-function functionsBase(): string {
-    if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
-        return "http://127.0.0.1:5001/canto-silva/us-central1";
-    }
-    return "https://us-central1-canto-silva.cloudfunctions.net";
-}
+const PROXY_BASE = "https://canto-canva-proxy.holy-leaf-3952.workers.dev";
 
 // ── PKCE helpers ──
 
@@ -121,7 +115,7 @@ export async function handleCanvaCallback(
     if (state !== savedState) throw new Error("Invalid OAuth state");
     if (!verifier) throw new Error("Missing code verifier");
 
-    const res = await fetch(`${functionsBase()}/canvaToken`, {
+    const res = await fetch(`${PROXY_BASE}/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, code_verifier: verifier, redirect_uri: redirectUri }),
@@ -146,10 +140,10 @@ export async function handleCanvaCallback(
 // ── Refresh token ──
 
 async function refreshAccessToken(tokens: CanvaTokens): Promise<CanvaTokens> {
-    const res = await fetch(`${functionsBase()}/canvaRefresh`, {
+    const res = await fetch(`${PROXY_BASE}/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: tokens.refresh_token }),
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: tokens.refresh_token }),
     });
 
     if (!res.ok) {
@@ -194,7 +188,7 @@ async function uploadAsset(
 
     onProgress?.("Nahrávám obrázek do Canvy…");
 
-    const res = await fetch(`${functionsBase()}/canvaUploadAsset`, {
+    const res = await fetch(`${PROXY_BASE}/upload-asset`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -221,7 +215,7 @@ async function uploadAsset(
     for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
 
-        const statusRes = await fetch(`${functionsBase()}/canvaAssetStatus`, {
+        const statusRes = await fetch(`${PROXY_BASE}/asset-status`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -260,7 +254,7 @@ export async function createCanvaDesign(
     onProgress?.("Vytvářím návrh v Canvě…");
     const token = await getValidToken();
 
-    const res = await fetch(`${functionsBase()}/canvaCreateDesign`, {
+    const res = await fetch(`${PROXY_BASE}/create-design`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
