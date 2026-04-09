@@ -3,7 +3,7 @@
  * Uses the generativelanguage.googleapis.com REST API with an API key.
  */
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export type ImageDescription = {
@@ -24,23 +24,60 @@ CS: [český popis, 2-3 věty]
 EN: [English description, 2-3 sentences]
 TAGS: [klíčová slova oddělená čárkou, česky i anglicky, min 15 slov]`;
 
+async function callGemini(
+    body: object,
+    apiKey: string,
+    models = GEMINI_MODELS
+): Promise<{ text: string; candidate: unknown }> {
+    for (const model of models) {
+        const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+
+            if (response.ok) {
+                const json = await response.json();
+                const candidate = json?.candidates?.[0];
+                const text: string = candidate?.content?.parts?.[0]?.text ?? "";
+                return { text, candidate };
+            }
+
+            if (response.status === 429) {
+                // Try to extract retry delay
+                const errBody = await response.text();
+                const delayMatch = errBody.match(/retry in (\d+)/i);
+                const waitSec = delayMatch ? Math.min(parseInt(delayMatch[1]), 60) : 10 * (attempt + 1);
+                console.warn(`Rate limited on ${model}, waiting ${waitSec}s (attempt ${attempt + 1}/3)…`);
+                await new Promise(r => setTimeout(r, waitSec * 1000));
+                continue;
+            }
+
+            // Non-429 error — try next model
+            const text = await response.text();
+            console.warn(`Gemini ${model} error ${response.status}, trying next model…`);
+            if (models.indexOf(model) === models.length - 1) {
+                throw new Error(`Gemini API chyba ${response.status}: ${text}`);
+            }
+            break;
+        }
+    }
+    throw new Error("Všechny Gemini modely selhaly.");
+}
+
 export async function describeImage(
     imageBase64: string,
     mimeType: string,
     apiKey: string
 ): Promise<ImageDescription> {
-    const url = `${GEMINI_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-
     const body = {
         contents: [
             {
                 parts: [
-                    {
-                        inlineData: {
-                            mimeType,
-                            data: imageBase64,
-                        },
-                    },
+                    { inlineData: { mimeType, data: imageBase64 } },
                     { text: PROMPT },
                 ],
             },
@@ -51,26 +88,12 @@ export async function describeImage(
         },
     };
 
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        if (response.status === 429) {
-            throw new Error("RATE_LIMIT");
-        }
-        throw new Error(`Gemini API chyba ${response.status}: ${text}`);
-    }
-
-    const json = await response.json();
-    const rawText: string =
-        json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-    return parseDescription(rawText);
+    const { text } = await callGemini(body, apiKey);
+    return parseDescription(text);
 }
+
+// Exported for marketing module to use
+export { callGemini, GEMINI_BASE, GEMINI_MODELS };
 
 function parseDescription(raw: string): ImageDescription {
     let descriptionCs = "";

@@ -38,16 +38,14 @@ export type MarketingQuery = {
 };
 
 const COLLECTION = "algorithmUpdates";
-const GEMINI_MODEL = "gemini-2.0-flash";
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-// ── Fetch latest algorithm news via Gemini + Google Search ──
+// ── Fetch via Gemini with Google Search grounding + auto-retry ──
 
 async function geminiWithSearch(
     prompt: string,
     apiKey: string
 ): Promise<{ text: string; sources: string[] }> {
-    const url = `${GEMINI_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const { callGemini } = await import("./gemini");
 
     const body = {
         contents: [{ parts: [{ text: prompt }] }],
@@ -58,35 +56,18 @@ async function geminiWithSearch(
         },
     };
 
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Gemini API chyba ${response.status}: ${text}`);
-    }
-
-    const json = await response.json();
-    const candidate = json?.candidates?.[0];
-    const text: string = candidate?.content?.parts
-        ?.map((p: { text?: string }) => p.text || "")
-        .join("") ?? "";
+    const { text, candidate } = await callGemini(body, apiKey);
 
     // Extract source URLs from grounding metadata
     const sources: string[] = [];
-    const groundingMeta = candidate?.groundingMetadata;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const groundingMeta = (candidate as any)?.groundingMetadata;
     if (groundingMeta?.groundingChunks) {
         for (const chunk of groundingMeta.groundingChunks) {
             if (chunk?.web?.uri) {
                 sources.push(chunk.web.uri);
             }
         }
-    }
-    if (groundingMeta?.webSearchQueries) {
-        // fallback: at least we know what was searched
     }
 
     return { text, sources };

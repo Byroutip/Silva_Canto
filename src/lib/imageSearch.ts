@@ -95,22 +95,16 @@ export async function getUnindexedFiles(
 
     const unindexed: DriveFile[] = [];
 
-    // Check in batches of 10 (Firestore 'in' query limit)
-    for (let i = 0; i < imageFiles.length; i += 10) {
-        const batch = imageFiles.slice(i, i + 10);
-        const ids = batch.map((f) => f.id);
-
-        const q = query(
-            collection(db, COLLECTION),
-            where("fileId", "in", ids)
-        );
-        const snap = await getDocs(q);
-        const indexedIds = new Set(snap.docs.map((d) => d.data().fileId));
-
-        for (const file of batch) {
-            if (!indexedIds.has(file.id)) {
+    // Check each file individually by document ID (more reliable than 'in' queries)
+    for (const file of imageFiles) {
+        try {
+            const snap = await getDoc(doc(db, COLLECTION, file.id));
+            if (!snap.exists()) {
                 unindexed.push(file);
             }
+        } catch {
+            // If we can't check, assume unindexed
+            unindexed.push(file);
         }
     }
 
@@ -160,8 +154,6 @@ export async function batchIndexImages(
 ): Promise<{ indexed: number; errors: number }> {
     let indexed = 0;
     let errors = 0;
-    const total = files.length;
-    let retryDelay = 500;
 
     for (let i = 0; i < files.length; i++) {
         if (signal?.aborted) break;
@@ -175,27 +167,16 @@ export async function batchIndexImages(
                 geminiApiKey
             );
             indexed++;
-            retryDelay = 500; // reset on success
         } catch (error) {
-            if (
-                error instanceof Error &&
-                error.message === "RATE_LIMIT"
-            ) {
-                // Exponential backoff
-                await new Promise((r) => setTimeout(r, retryDelay));
-                retryDelay = Math.min(retryDelay * 2, 8000);
-                i--; // retry this file
-                continue;
-            }
-            console.warn(`Index failed for ${files[i].name}:`, error);
+            console.error(`Index failed for ${files[i].name}:`, error);
             errors++;
         }
 
-        onProgress(indexed + errors, total);
+        onProgress(indexed + errors, files.length);
 
-        // Small delay between requests to be gentle on rate limits
+        // Small delay between requests
         if (i < files.length - 1) {
-            await new Promise((r) => setTimeout(r, 300));
+            await new Promise((r) => setTimeout(r, 500));
         }
     }
 
