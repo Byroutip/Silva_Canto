@@ -30,8 +30,15 @@ import {
     searchImages,
     type ImageIndexDoc,
 } from "./lib/imageSearch";
+import {
+    refreshAllUpdates,
+    getStoredUpdates,
+    askMarketingQuestion,
+    type AlgorithmUpdate,
+    type MarketingQuery,
+} from "./lib/marketing";
 
-type Screen = "login" | "home" | "browser";
+type Screen = "login" | "home" | "browser" | "marketing";
 
 const ROOT_FOLDER_ID = import.meta.env.VITE_ROOT_FOLDER_ID;
 const ROOT_FOLDER_NAME = import.meta.env.VITE_ROOT_FOLDER_NAME || "Kořen";
@@ -106,6 +113,12 @@ const Icons = {
     key: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>,
     brain: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 3.5 2.5 6.5 6 7v6h2v-6c3.5-.5 6-3.5 6-7a7 7 0 0 0-7-7z"/><path d="M9 12a3 3 0 0 0 6 0"/></svg>,
     closeSm: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    trendUp: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>,
+    trendUpSm: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>,
+    send: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    chevDown: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>,
+    chevUp: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>,
+    externalLink: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>,
 };
 
 export default function App() {
@@ -169,6 +182,16 @@ export default function App() {
     const [searchScope, setSearchScope] = useState<"folder" | "global">("global");
     const [indexingProgress, setIndexingProgress] = useState<{ done: number; total: number } | null>(null);
     const [totalIndexed, setTotalIndexed] = useState(0);
+
+    // Marketing
+    const [mktUpdates, setMktUpdates] = useState<AlgorithmUpdate[]>([]);
+    const [mktLoading, setMktLoading] = useState(false);
+    const [mktProgress, setMktProgress] = useState("");
+    const [mktQuestion, setMktQuestion] = useState("");
+    const [mktAnswer, setMktAnswer] = useState<MarketingQuery | null>(null);
+    const [mktAskLoading, setMktAskLoading] = useState(false);
+    const [mktExpandedId, setMktExpandedId] = useState<string | null>(null);
+    const [mktFilter, setMktFilter] = useState<"all" | "facebook" | "instagram">("all");
 
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const folderCache = useRef<Map<string, { data: DriveFile[]; ts: number }>>(new Map());
@@ -628,23 +651,26 @@ export default function App() {
 
     async function triggerIndexing(folderFiles: DriveFile[], folderId: string) {
         const apiKey = geminiKey();
-        if (!apiKey) return;
+        if (!apiKey) {
+            console.warn("No Gemini API key configured");
+            return;
+        }
+
+        const imageFiles = folderFiles.filter(f => f.mimeType.startsWith("image/"));
+        if (imageFiles.length === 0) return;
+
         try {
-            const unindexed = await getUnindexedFiles(db, folderFiles);
-            if (unindexed.length === 0) {
-                // Count how many are indexed
-                const imageCount = folderFiles.filter(f => f.mimeType.startsWith("image/")).length;
-                setTotalIndexed(imageCount);
-                return;
-            }
+            const unindexed = await getUnindexedFiles(db, imageFiles);
+            const alreadyIndexed = imageFiles.length - unindexed.length;
+            setTotalIndexed(alreadyIndexed);
+
+            if (unindexed.length === 0) return;
 
             // Abort previous indexing
             indexAbortRef.current?.abort();
             const controller = new AbortController();
             indexAbortRef.current = controller;
 
-            const alreadyIndexed = folderFiles.filter(f => f.mimeType.startsWith("image/")).length - unindexed.length;
-            setTotalIndexed(alreadyIndexed);
             setIndexingProgress({ done: 0, total: unindexed.length });
 
             const result = await batchIndexImages(
@@ -659,9 +685,14 @@ export default function App() {
             if (!controller.signal.aborted) {
                 setIndexingProgress(null);
                 setTotalIndexed(alreadyIndexed + result.indexed);
+                if (result.errors > 0) {
+                    setMessage(`Indexace: ${result.indexed} OK, ${result.errors} chyb.`);
+                }
             }
-        } catch {
+        } catch (error) {
+            console.error("Indexing error:", error);
             setIndexingProgress(null);
+            setMessage(`Chyba indexace: ${getErrorMessage(error)}`);
         }
     }
 
@@ -705,6 +736,59 @@ export default function App() {
             });
         }
     }
+
+    // ── Marketing ──
+
+    async function openMarketing() {
+        setScreen("marketing");
+        setMktLoading(true);
+        try {
+            const stored = await getStoredUpdates(db);
+            setMktUpdates(stored);
+        } catch (error) {
+            console.error("Failed to load marketing updates:", error);
+        } finally {
+            setMktLoading(false);
+        }
+    }
+
+    async function handleMktRefresh() {
+        const apiKey = geminiKey();
+        if (!apiKey) { setMessage("Chybí Gemini API klíč."); return; }
+        setMktLoading(true); setMktProgress("");
+        try {
+            const updates = await refreshAllUpdates(db, apiKey, (msg) => setMktProgress(msg));
+            const stored = await getStoredUpdates(db);
+            setMktUpdates(stored);
+            setMktProgress("");
+            setMessage(`Nalezeno ${updates.length} novinek.`);
+        } catch (error) {
+            setMktProgress("");
+            setMessage(getErrorMessage(error));
+        } finally {
+            setMktLoading(false);
+        }
+    }
+
+    async function handleMktAsk() {
+        const q = mktQuestion.trim();
+        if (!q) return;
+        const apiKey = geminiKey();
+        if (!apiKey) { setMessage("Chybí Gemini API klíč."); return; }
+        setMktAskLoading(true); setMktAnswer(null);
+        try {
+            const result = await askMarketingQuestion(q, apiKey);
+            setMktAnswer(result);
+        } catch (error) {
+            setMessage(getErrorMessage(error));
+        } finally {
+            setMktAskLoading(false);
+        }
+    }
+
+    const filteredMktUpdates = mktFilter === "all"
+        ? mktUpdates
+        : mktUpdates.filter(u => u.platform === mktFilter);
 
     // ── Effects ──
 
@@ -786,7 +870,7 @@ export default function App() {
                             </div>
                         </div>
                         <div className="header-actions">
-                            {screen === "browser" && (
+                            {(screen === "browser" || screen === "marketing") && (
                                 <button className="btn btn-ghost" onClick={() => { setScreen("home"); setSelected(new Set()); }} disabled={loading}>
                                     {Icons.home} Domů
                                 </button>
@@ -814,6 +898,11 @@ export default function App() {
                                 <div className="tile-icon">{Icons.upload}</div>
                                 <span className="tile-title">Nahrát</span>
                                 <span className="tile-desc">Vybrat fotku nebo video</span>
+                            </button>
+                            <button className="home-tile" onClick={openMarketing} disabled={loading}>
+                                <div className="tile-icon tile-icon-marketing">{Icons.trendUp}</div>
+                                <span className="tile-title">Marketingové algoritmy</span>
+                                <span className="tile-desc">Novinky a změny algoritmů FB & IG</span>
                             </button>
                             {userIsAdmin && (
                                 <button className="home-tile" onClick={() => { setAdminPanelOpen(true); refreshAccessConfig(); }} disabled={loading}>
@@ -1041,6 +1130,156 @@ export default function App() {
 
                             {files.length > 0 && (
                                 <div className="file-count">{files.length} {files.length === 1 ? "položka" : files.length < 5 ? "položky" : "položek"}</div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ── Marketing dashboard ── */}
+                    {screen === "marketing" && (
+                        <div className="mkt-dashboard">
+                            <div className="mkt-header">
+                                <div>
+                                    <h2 className="mkt-title">{Icons.trendUpSm} Marketingové algoritmy</h2>
+                                    <p className="mkt-subtitle">Aktuální změny algoritmů Facebooku a Instagramu, vysvětlené jednoduše</p>
+                                </div>
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={handleMktRefresh}
+                                    disabled={mktLoading}
+                                >
+                                    {Icons.refresh} Aktualizovat novinky
+                                </button>
+                            </div>
+
+                            {/* AI Question */}
+                            <div className="mkt-ask-wrap">
+                                <div className="mkt-ask-bar">
+                                    <span className="search-bar-icon">{Icons.search}</span>
+                                    <input
+                                        className="search-bar-input"
+                                        type="text"
+                                        placeholder="Zeptej se na cokoliv o algoritmech… např. &quot;Jak zvýšit dosah na Instagramu?&quot;"
+                                        value={mktQuestion}
+                                        onChange={(e) => setMktQuestion(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === "Enter") handleMktAsk(); }}
+                                    />
+                                    <button
+                                        className="btn btn-primary btn-sm"
+                                        onClick={handleMktAsk}
+                                        disabled={mktAskLoading || !mktQuestion.trim()}
+                                    >
+                                        {mktAskLoading ? <span className="spinner" style={{ width: 14, height: 14 }} /> : Icons.send}
+                                        Zeptat se
+                                    </button>
+                                </div>
+                                {mktAnswer && (
+                                    <div className="mkt-answer">
+                                        <div className="mkt-answer-q">
+                                            <strong>Otázka:</strong> {mktAnswer.question}
+                                        </div>
+                                        <div className="mkt-answer-text">{mktAnswer.answer}</div>
+                                        {mktAnswer.sources.length > 0 && (
+                                            <div className="mkt-answer-sources">
+                                                {mktAnswer.sources.slice(0, 3).map((src, i) => (
+                                                    <a key={i} href={src} target="_blank" rel="noopener noreferrer" className="mkt-source-link">
+                                                        {Icons.externalLink} Zdroj {i + 1}
+                                                    </a>
+                                                ))}
+                                            </div>
+                                        )}
+                                        <button className="btn btn-ghost btn-sm" onClick={() => setMktAnswer(null)}>Zavřít</button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Filter tabs */}
+                            <div className="mkt-filter-row">
+                                <div className="mkt-filter-tabs">
+                                    <button
+                                        className={`mkt-filter-tab ${mktFilter === "all" ? "mkt-filter-active" : ""}`}
+                                        onClick={() => setMktFilter("all")}
+                                    >Vše</button>
+                                    <button
+                                        className={`mkt-filter-tab ${mktFilter === "facebook" ? "mkt-filter-active" : ""}`}
+                                        onClick={() => setMktFilter("facebook")}
+                                    >Facebook</button>
+                                    <button
+                                        className={`mkt-filter-tab ${mktFilter === "instagram" ? "mkt-filter-active" : ""}`}
+                                        onClick={() => setMktFilter("instagram")}
+                                    >Instagram</button>
+                                </div>
+                                {mktUpdates.length > 0 && (
+                                    <span className="mkt-update-count">{filteredMktUpdates.length} novinek</span>
+                                )}
+                            </div>
+
+                            {/* Loading */}
+                            {mktLoading && (
+                                <div className="mkt-loading">
+                                    <span className="spinner" />
+                                    <span>{mktProgress || "Načítám…"}</span>
+                                </div>
+                            )}
+
+                            {/* Empty state */}
+                            {!mktLoading && mktUpdates.length === 0 && (
+                                <div className="mkt-empty">
+                                    <div style={{ opacity: 0.3 }}>{Icons.trendUp}</div>
+                                    <p>Zatím žádné novinky</p>
+                                    <p>Klikni na <strong>Aktualizovat novinky</strong> pro stažení aktuálních změn algoritmů.</p>
+                                </div>
+                            )}
+
+                            {/* Updates list */}
+                            {!mktLoading && filteredMktUpdates.length > 0 && (
+                                <div className="mkt-updates">
+                                    {filteredMktUpdates.map((update) => {
+                                        const isExpanded = mktExpandedId === update.id;
+                                        return (
+                                            <div key={update.id} className={`mkt-card ${isExpanded ? "mkt-card-expanded" : ""}`}>
+                                                <button
+                                                    className="mkt-card-header"
+                                                    onClick={() => setMktExpandedId(isExpanded ? null : update.id)}
+                                                >
+                                                    <div className="mkt-card-left">
+                                                        <span className={`mkt-platform-badge mkt-platform-${update.platform}`}>
+                                                            {update.platform === "facebook" ? "FB" : "IG"}
+                                                        </span>
+                                                        <div className="mkt-card-title-wrap">
+                                                            <span className="mkt-card-title">{update.title}</span>
+                                                            <span className="mkt-card-date">{update.date}</span>
+                                                        </div>
+                                                    </div>
+                                                    <span className="mkt-card-chevron">
+                                                        {isExpanded ? Icons.chevUp : Icons.chevDown}
+                                                    </span>
+                                                </button>
+                                                <div className="mkt-card-summary">{update.summary}</div>
+                                                {isExpanded && (
+                                                    <div className="mkt-card-details">
+                                                        <div className="mkt-card-details-text">{update.details}</div>
+                                                        {update.tags.length > 0 && (
+                                                            <div className="mkt-card-tags">
+                                                                {update.tags.map((tag, i) => (
+                                                                    <span key={i} className="search-tag">{tag}</span>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                        {update.sources.length > 0 && (
+                                                            <div className="mkt-card-sources">
+                                                                {update.sources.slice(0, 3).map((src, i) => (
+                                                                    <a key={i} href={src} target="_blank" rel="noopener noreferrer" className="mkt-source-link">
+                                                                        {Icons.externalLink} Zdroj
+                                                                    </a>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             )}
                         </div>
                     )}

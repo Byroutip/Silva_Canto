@@ -1239,6 +1239,319 @@ body { margin: 0; }
 }
 
 /* ═══════════════════════════════════════════
+   Marketing Dashboard
+   ═══════════════════════════════════════════ */
+
+.tile-icon-marketing {
+  background: #fef3c7 !important;
+  color: #f59e0b !important;
+}
+
+.home-tile:hover .tile-icon-marketing {
+  background: #fde68a !important;
+  color: #d97706 !important;
+}
+
+.mkt-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.mkt-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mkt-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mkt-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* ── AI Question bar ── */
+
+.mkt-ask-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mkt-ask-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 8px 14px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.mkt-ask-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.mkt-answer {
+  background: var(--accent-light);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mkt-answer-q {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.mkt-answer-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.mkt-answer-sources {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mkt-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 8px;
+  background: var(--surface);
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  transition: all var(--transition);
+}
+
+.mkt-source-link:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── Filter tabs ── */
+
+.mkt-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mkt-filter-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-hover);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+
+.mkt-filter-tab {
+  border: none;
+  background: transparent;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+
+.mkt-filter-tab:hover {
+  color: var(--text);
+}
+
+.mkt-filter-active {
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.mkt-update-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Loading / Empty ── */
+
+.mkt-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 16px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.mkt-empty {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--text-muted);
+}
+
+.mkt-empty p {
+  margin: 8px 0 0;
+}
+
+/* ── Update cards ── */
+
+.mkt-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mkt-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.mkt-card:hover {
+  border-color: #d1d5db;
+}
+
+.mkt-card-expanded {
+  border-color: var(--accent-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.mkt-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  gap: 12px;
+}
+
+.mkt-card-header:hover {
+  background: var(--surface-hover);
+}
+
+.mkt-card-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mkt-platform-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.mkt-platform-facebook {
+  background: #dbeafe;
+  color: #2563eb;
+}
+
+.mkt-platform-instagram {
+  background: #fce7f3;
+  color: #db2777;
+}
+
+.mkt-card-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mkt-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mkt-card-date {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mkt-card-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.mkt-card-summary {
+  padding: 0 16px 14px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.mkt-card-details {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border-light);
+  padding-top: 14px;
+}
+
+.mkt-card-details-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.mkt-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mkt-card-sources {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ═══════════════════════════════════════════
    Drag & Drop Upload
    ═══════════════════════════════════════════ */
 
