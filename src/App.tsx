@@ -39,6 +39,14 @@ import {
     type AlgorithmUpdate,
     type MarketingQuery,
 } from "./lib/marketing";
+import {
+    getCanvaTokens,
+    startCanvaAuth,
+    handleCanvaCallback,
+    createCanvaDesign,
+    getPendingAction,
+    savePendingAction,
+} from "./lib/canva";
 
 type Screen = "login" | "home" | "browser" | "marketing";
 
@@ -648,13 +656,15 @@ export default function App() {
 
     type CanvaFormat = "1:1" | "4:5" | "16:9" | "9:16" | "original";
 
-    const CANVA_FORMAT_INFO: Record<CanvaFormat, { label: string; canvaUrl: string }> = {
-        "1:1": { label: "1:1 (Instagram post)", canvaUrl: "https://www.canva.com/instagram-posts/templates/" },
-        "4:5": { label: "4:5 (Instagram portrét)", canvaUrl: "https://www.canva.com/instagram-posts/templates/" },
-        "16:9": { label: "16:9 (Prezentace)", canvaUrl: "https://www.canva.com/presentations/templates/" },
-        "9:16": { label: "9:16 (Instagram story)", canvaUrl: "https://www.canva.com/instagram-stories/templates/" },
-        "original": { label: "Originál", canvaUrl: "https://www.canva.com/" },
+    const CANVA_FORMAT_INFO: Record<CanvaFormat, { label: string; w: number; h: number }> = {
+        "1:1": { label: "1:1 (Instagram post)", w: 1080, h: 1080 },
+        "4:5": { label: "4:5 (Instagram portrét)", w: 1080, h: 1350 },
+        "16:9": { label: "16:9 (Prezentace)", w: 1920, h: 1080 },
+        "9:16": { label: "9:16 (Instagram story)", w: 1080, h: 1920 },
+        "original": { label: "Originál", w: 0, h: 0 },
     };
+
+    const CANVA_REDIRECT_URI = window.location.origin + "/";
 
     function openCanvaDialog(file: DriveFile) {
         setCanvaFile(file);
@@ -663,34 +673,77 @@ export default function App() {
 
     async function openInCanva(format: CanvaFormat) {
         if (!canvaFile) return;
+        const file = canvaFile;
         setCanvaDialog(false);
+
+        const tokens = getCanvaTokens();
+        if (!tokens) {
+            // Save pending action and start OAuth
+            const info = CANVA_FORMAT_INFO[format];
+            savePendingAction({
+                fileId: file.id,
+                fileName: file.name,
+                mimeType: file.mimeType,
+                format,
+                width: info.w,
+                height: info.h,
+            });
+            await startCanvaAuth(CANVA_REDIRECT_URI);
+            return;
+        }
+
+        await executeCanvaDesign(file, format);
+    }
+
+    async function executeCanvaDesign(file: DriveFile, format: CanvaFormat) {
         setLoading(true);
         setMessage("");
         try {
             setConvertProgress("Stahuji obrázek…");
-            const data = await downloadFile(accessToken, canvaFile.id);
+            const data = await downloadFile(accessToken, file.id);
 
-            if (format === "original") {
-                // Download original without cropping
-                const blob = new Blob([data], { type: canvaFile.mimeType });
-                const dotIdx = canvaFile.name.lastIndexOf(".");
-                const baseName = dotIdx > 0 ? canvaFile.name.substring(0, dotIdx) : canvaFile.name;
-                const ext = dotIdx > 0 ? canvaFile.name.substring(dotIdx) : ".jpg";
-                triggerBrowserDownload(blob, `${baseName}_canva${ext}`);
-            } else {
-                // Crop to selected ratio and download
+            let imageData: ArrayBuffer;
+            let mimeType = file.mimeType;
+
+            if (format !== "original") {
                 setConvertProgress(`Ořezávám na ${format}…`);
-                const cropped = await cropImage(data, canvaFile.mimeType, format as AspectRatio);
-                const dotIdx = canvaFile.name.lastIndexOf(".");
-                const baseName = dotIdx > 0 ? canvaFile.name.substring(0, dotIdx) : canvaFile.name;
-                const ext = canvaFile.mimeType === "image/png" ? ".png" : ".jpg";
-                triggerBrowserDownload(cropped, `${baseName}_${format.replace(":", "x")}${ext}`);
+                const cropped = await cropImage(data, file.mimeType, format as AspectRatio);
+                imageData = await cropped.arrayBuffer();
+                mimeType = cropped.type;
+            } else {
+                imageData = data;
             }
 
+            const info = CANVA_FORMAT_INFO[format];
+            let w = info.w;
+            let h = info.h;
+
+            // For original, detect dimensions from the image
+            if (format === "original") {
+                const blob = new Blob([data], { type: file.mimeType });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = url; });
+                w = img.naturalWidth;
+                h = img.naturalHeight;
+                URL.revokeObjectURL(url);
+                // Clamp to Canva limits (40-8000)
+                w = Math.max(40, Math.min(8000, w));
+                h = Math.max(40, Math.min(8000, h));
+            }
+
+            const editUrl = await createCanvaDesign(
+                imageData,
+                file.name,
+                mimeType,
+                w, h,
+                file.name.replace(/\.[^.]+$/, ""),
+                (msg) => setConvertProgress(msg)
+            );
+
             setConvertProgress("");
-            // Open Canva with the right design type
-            window.open(CANVA_FORMAT_INFO[format].canvaUrl, "_blank");
-            setMessage("Obrázek stažen — vlož ho do nového návrhu v Canvě (přetáhni nebo Nahrávání).");
+            window.open(editUrl, "_blank");
+            setMessage("Návrh vytvořen v Canvě — otevírám editor.");
         } catch (error) {
             setConvertProgress("");
             setMessage(getErrorMessage(error));
@@ -698,6 +751,43 @@ export default function App() {
             setLoading(false);
         }
     }
+
+    // Detect Canva OAuth callback on initial load (before Google login)
+    const [canvaCallbackPending, setCanvaCallbackPending] = useState<{ code: string; state: string } | null>(() => {
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get("code");
+        const state = params.get("state");
+        if (code && state) {
+            window.history.replaceState({}, "", window.location.pathname);
+            return { code, state };
+        }
+        return null;
+    });
+
+    // Execute Canva callback once Google accessToken is available
+    useEffect(() => {
+        if (!canvaCallbackPending || !accessToken) return;
+        const { code, state } = canvaCallbackPending;
+        setCanvaCallbackPending(null);
+
+        handleCanvaCallback(code, state, CANVA_REDIRECT_URI)
+            .then(() => {
+                const pending = getPendingAction();
+                if (pending) {
+                    const file: DriveFile = {
+                        id: pending.fileId,
+                        name: pending.fileName,
+                        mimeType: pending.mimeType,
+                    };
+                    executeCanvaDesign(file, pending.format as CanvaFormat);
+                } else {
+                    setMessage("Canva propojeno — zkus to znovu.");
+                }
+            })
+            .catch((err) => {
+                setMessage(`Canva autorizace selhala: ${getErrorMessage(err)}`);
+            });
+    }, [canvaCallbackPending, accessToken]);
 
     // ── AI Search ──
 
