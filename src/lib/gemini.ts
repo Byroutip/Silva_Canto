@@ -3,7 +3,7 @@
  * Uses the generativelanguage.googleapis.com REST API with an API key.
  */
 
-const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
+const GEMINI_MODELS = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"];
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export type ImageDescription = {

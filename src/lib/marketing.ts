@@ -39,6 +39,22 @@ export type MarketingQuery = {
 
 const COLLECTION = "algorithmUpdates";
 
+const META_OFFICIAL_SOURCES = `
+OFICIÁLNÍ ZDROJE META (vždy z nich čerpej informace):
+- Meta Transparency Center – Explaining Ranking: https://transparency.meta.com/features/explaining-ranking/
+- Facebook Reels AI system: https://transparency.meta.com/features/explaining-ranking/fb-reels/
+- Instagram Reels Chaining AI system: https://transparency.meta.com/features/explaining-ranking/ig-reels-chaining/
+- Instagram Explore AI system: https://transparency.meta.com/features/explaining-ranking/ig-explore/
+- Instagram Creators – Recommendations and originality: https://creators.instagram.com/blog/recommendations-and-originality
+- About Meta – How AI ranks content: https://about.fb.com/news/2023/06/how-ai-ranks-content-on-facebook-and-instagram/
+`;
+
+const FORMAT_TAGS_INSTRUCTION = `
+TAGS musí VŽDY obsahovat typ formátu kterého se změna týká. Použij tyto tagy (jeden nebo více):
+feed, reels, stories, carousel, voice, live, text, photo, video, explore, hashtags, engagement, dosah, algoritmus
+Příklad: "feed, reels, dosah, engagement"
+`;
+
 // ── Fetch via Gemini with Google Search grounding + auto-retry ──
 
 async function geminiWithSearch(
@@ -83,6 +99,8 @@ export async function scrapeAlgorithmChanges(
 
     const prompt = `Najdi nejnovější změny a novinky v algoritmu ${platformName} z posledních 7 dní (dnes je ${new Date().toISOString().split("T")[0]}).
 
+${META_OFFICIAL_SOURCES}
+
 Pro každou změnu/novinku odpověz ve formátu (můžeš uvést 3-5 položek):
 
 ---ITEM---
@@ -90,8 +108,10 @@ TITLE: [stručný název změny]
 DATE: [datum ve formátu YYYY-MM-DD, nebo přibližné]
 SUMMARY: [vysvětlení změny jednoduše, lidskou řečí, jako bys to vysvětloval kamarádovi co dělá marketing. 2-3 věty v češtině. Žádný odborný žargon.]
 DETAILS: [podrobnější vysvětlení co to prakticky znamená pro člověka co spravuje firemní profil na ${platformName}. Co by měl změnit ve své strategii? 3-5 vět v češtině.]
-TAGS: [klíčová slova oddělená čárkou, česky]
+TAGS: [formátové tagy + klíčová slova oddělená čárkou]
 ---END---
+
+${FORMAT_TAGS_INSTRUCTION}
 
 Pokud nejsou žádné nové změny z posledních 7 dní, uveď nejnovější známé změny/trendy algoritmu ${platformName}.
 Odpovídej POUZE ve formátu výše, žádný úvod ani závěr.`;
@@ -119,7 +139,7 @@ function parseUpdates(
             : [];
 
         if (title && summary) {
-            const id = `${platform}-${date}-${title.slice(0, 30).replace(/\s+/g, "-").toLowerCase()}`;
+            const id = `${platform}-${date}-${title.slice(0, 30).replace(/[^a-z0-9áčďéěíňóřšťúůýž]+/gi, "-").toLowerCase()}`;
             updates.push({
                 id,
                 platform,
@@ -177,10 +197,12 @@ export async function askMarketingQuestion(
 ): Promise<MarketingQuery> {
     const prompt = `Jsi marketingový expert, který vysvětluje věci jednoduše a srozumitelně. Mluv česky, jako bys radil kamarádovi.
 
+${META_OFFICIAL_SOURCES}
+
 Otázka: ${question}
 
 Odpověz stručně a prakticky (max 5 vět). Zaměř se na to, co to znamená PRO PRAXI — co konkrétně má člověk udělat nebo změnit.
-Nepoužívej odborný žargon. Mluv jednoduše.`;
+Nepoužívej odborný žargon. Mluv jednoduše. Čerpej z oficiálních zdrojů Meta výše.`;
 
     const { text, sources } = await geminiWithSearch(prompt, apiKey);
     return { question, answer: text, sources };
@@ -196,20 +218,28 @@ async function scrapeCurrentAlgorithm(
 
     const prompt = `Popiš KOMPLETNĚ jak aktuálně (rok 2025/2026) funguje algoritmus ${platformName}. Rozděl to do hlavních oblastí.
 
+${META_OFFICIAL_SOURCES}
+
+Čerpej PRIMÁRNĚ z výše uvedených oficiálních zdrojů Meta.
+
 Pro každou oblast odpověz ve formátu:
 
 ---ITEM---
-TITLE: [název oblasti, např. "Řazení příspěvků ve feedu" nebo "Dosah Reels"]
+TITLE: [název oblasti, např. "Feed - řazení příspěvků" nebo "Reels - dosah a distribuce"]
 DATE: ${new Date().toISOString().split("T")[0]}
 SUMMARY: [vysvětli jednoduše jak tato část algoritmu funguje. Piš česky, lidsky, jako bys vysvětloval kamarádovi co dělá marketing na sítích. 3-4 věty. Žádný žargon.]
 DETAILS: [podrobnější vysvětlení s praktickými tipy. Co konkrétně ovlivňuje úspěch v této oblasti? Jaké metriky algoritmus sleduje? Co dělat a nedělat? 5-8 vět česky, jednoduše.]
-TAGS: [klíčová slova oddělená čárkou, česky]
+TAGS: [formátové tagy + klíčová slova oddělená čárkou]
 ---END---
 
-Pokryj tyto oblasti:
-- Jak funguje feed (řazení příspěvků)
-- Stories algoritmus
-- Reels / Videa algoritmus
+${FORMAT_TAGS_INSTRUCTION}
+
+Pokryj tyto oblasti (pro každou samostatný ITEM):
+- Feed (řazení příspěvků)
+- Stories
+- Reels / Videa
+- Carousel / Kolotoče
+- Explore / Objevování
 - Engagement signály (co algoritmus měří)
 - Dosah a viditelnost
 - Hashtags a discovery
