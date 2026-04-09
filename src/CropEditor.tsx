@@ -14,6 +14,7 @@ const RATIO_LABELS: Record<AspectRatio, string> = {
     "1:1": "1 : 1",
     "4:5": "4 : 5",
     "16:9": "16 : 9",
+    "9:16": "9 : 16",
 };
 
 export default function CropEditor({ imageUrl, naturalWidth, naturalHeight, ratios, onConfirm, onCancel }: Props) {

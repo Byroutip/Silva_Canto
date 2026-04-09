@@ -121,6 +121,8 @@ const Icons = {
     chevDown: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>,
     chevUp: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>,
     externalLink: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>,
+    canva: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M3 9h18"/></svg>,
+    canvaLg: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M3 9h18"/></svg>,
 };
 
 export default function App() {
@@ -165,6 +167,10 @@ export default function App() {
     const [convertFile, setConvertFile] = useState<DriveFile | null>(null);
     const [convertRatios, setConvertRatios] = useState<Set<AspectRatio>>(new Set());
     const [convertProgress, setConvertProgress] = useState("");
+    // Canva dialog
+    const [canvaDialog, setCanvaDialog] = useState(false);
+    const [canvaFile, setCanvaFile] = useState<DriveFile | null>(null);
+
     // Crop editor
     const [cropEditorOpen, setCropEditorOpen] = useState(false);
     const [cropImageUrl, setCropImageUrl] = useState("");
@@ -323,13 +329,6 @@ export default function App() {
     async function handleOpenLibrary() {
         setLoading(true); setMessage("");
         try { await openRootFolder(false); }
-        catch (error) { setMessage(getErrorMessage(error)); }
-        finally { setLoading(false); }
-    }
-
-    async function handleUploadFromHome() {
-        setLoading(true); setMessage("");
-        try { await openRootFolder(true); }
         catch (error) { setMessage(getErrorMessage(error)); }
         finally { setLoading(false); }
     }
@@ -645,6 +644,32 @@ export default function App() {
         } finally { setLoading(false); setCropFileData(null); }
     }
 
+    // ── Canva ──
+
+    type CanvaFormat = "1:1" | "4:5" | "16:9" | "9:16" | "original";
+
+    const CANVA_DIMS: Record<Exclude<CanvaFormat, "original">, { w: number; h: number }> = {
+        "1:1": { w: 1080, h: 1080 },
+        "4:5": { w: 1080, h: 1350 },
+        "16:9": { w: 1920, h: 1080 },
+        "9:16": { w: 1080, h: 1920 },
+    };
+
+    function openCanvaDialog(file: DriveFile) {
+        setCanvaFile(file);
+        setCanvaDialog(true);
+    }
+
+    function openInCanva(format: CanvaFormat) {
+        setCanvaDialog(false);
+        if (format === "original") {
+            window.open("https://www.canva.com/design/new", "_blank");
+        } else {
+            const { w, h } = CANVA_DIMS[format];
+            window.open(`https://www.canva.com/design/new?width=${w}&height=${h}&units=px`, "_blank");
+        }
+    }
+
     // ── AI Search ──
 
     function geminiKey(): string {
@@ -911,11 +936,6 @@ export default function App() {
                                 <span className="tile-title">Knihovna</span>
                                 <span className="tile-desc">Procházet složky a soubory</span>
                             </button>
-                            <button className="home-tile" onClick={handleUploadFromHome} disabled={loading}>
-                                <div className="tile-icon">{Icons.upload}</div>
-                                <span className="tile-title">Nahrát</span>
-                                <span className="tile-desc">Vybrat fotku nebo video</span>
-                            </button>
                             <button className="home-tile" onClick={openMarketing} disabled={loading}>
                                 <div className="tile-icon tile-icon-marketing">{Icons.trendUp}</div>
                                 <span className="tile-title">Marketingové algoritmy</span>
@@ -1137,6 +1157,9 @@ export default function App() {
                                                 )}
                                                 {canConvert && (
                                                     <button className="btn-icon btn-icon-accent" title="Konvertovat" onClick={() => openConvertDialog(file)} disabled={loading}>{Icons.crop}</button>
+                                                )}
+                                                {file.mimeType.startsWith("image/") && (
+                                                    <button className="btn-icon btn-icon-accent" title="Otevřít v Canvě" onClick={() => openCanvaDialog(file)} disabled={loading}>{Icons.canva}</button>
                                                 )}
                                                 <button className="btn-icon btn-icon-danger" title="Smazat" onClick={() => handleDeleteSingle(file)} disabled={loading}>{Icons.trash}</button>
                                             </div>
@@ -1405,6 +1428,32 @@ export default function App() {
                 </div>
             )}
 
+            {/* ── Canva dialog ── */}
+            {canvaDialog && canvaFile && (
+                <div className="overlay" onClick={() => setCanvaDialog(false)}>
+                    <div className="dialog dialog-convert" onClick={(e) => e.stopPropagation()}>
+                        <div className="dialog-icon-accent">{Icons.canvaLg}</div>
+                        <h2>Otevřít v Canvě</h2>
+                        <p className="dialog-desc"><strong>{canvaFile.name}</strong><br />Vyber formát projektu v Canvě.</p>
+                        <div className="ratio-grid">
+                            {(["1:1", "4:5", "16:9", "9:16"] as const).map((r) => (
+                                <button key={r} className="ratio-card" onClick={() => openInCanva(r)}>
+                                    <div className={`ratio-preview ratio-preview-${r.replace(":", "x")}`} />
+                                    <span className="ratio-label">{r}</span>
+                                </button>
+                            ))}
+                            <button className="ratio-card" onClick={() => openInCanva("original")}>
+                                <div className="ratio-preview" style={{ width: 40, height: 30, borderRadius: 4 }} />
+                                <span className="ratio-label">Originál</span>
+                            </button>
+                        </div>
+                        <div className="dialog-actions">
+                            <button className="btn btn-ghost" onClick={() => setCanvaDialog(false)}>Zrušit</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ── Crop editor ── */}
             {cropEditorOpen && convertFile && (
                 <CropEditor imageUrl={cropImageUrl} naturalWidth={cropNatW} naturalHeight={cropNatH}
@@ -1487,6 +1536,11 @@ export default function App() {
                         <button className="btn btn-ghost btn-sm preview-download-btn" onClick={(e) => { e.stopPropagation(); handleDownload(previewFile); }}>
                             {Icons.download} Stáhnout
                         </button>
+                        {previewFile.mimeType.startsWith("image/") && (
+                            <button className="btn btn-accent btn-sm preview-download-btn" onClick={(e) => { e.stopPropagation(); openCanvaDialog(previewFile); }}>
+                                {Icons.canva} Canva
+                            </button>
+                        )}
                     </div>
                     <div className="preview-content" onClick={(e) => e.stopPropagation()}>
                         {previewLoading && (

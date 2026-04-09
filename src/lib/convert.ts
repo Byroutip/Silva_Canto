@@ -1,17 +1,19 @@
-export type AspectRatio = "1:1" | "4:5" | "16:9";
+export type AspectRatio = "1:1" | "4:5" | "16:9" | "9:16";
 
-export const ALL_RATIOS: AspectRatio[] = ["1:1", "4:5", "16:9"];
+export const ALL_RATIOS: AspectRatio[] = ["1:1", "4:5", "16:9", "9:16"];
 
 const RATIO_VALUES: Record<AspectRatio, number> = {
     "1:1": 1,
     "4:5": 4 / 5,
     "16:9": 16 / 9,
+    "9:16": 9 / 16,
 };
 
 export const RATIO_SUFFIXES: Record<AspectRatio, string> = {
     "1:1": "1x1",
     "4:5": "4x5",
     "16:9": "16x9",
+    "9:16": "9x16",
 };
 
 /**
