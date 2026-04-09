@@ -664,7 +664,7 @@ export default function App() {
         "original": { label: "Originál", w: 0, h: 0 },
     };
 
-    const CANVA_REDIRECT_URI = window.location.origin + "/";
+    const CANVA_REDIRECT_URI = window.location.origin;
 
     function openCanvaDialog(file: DriveFile) {
         setCanvaFile(file);
@@ -678,7 +678,6 @@ export default function App() {
 
         const tokens = getCanvaTokens();
         if (!tokens) {
-            // Save pending action and start OAuth
             const info = CANVA_FORMAT_INFO[format];
             savePendingAction({
                 fileId: file.id,
@@ -688,19 +687,23 @@ export default function App() {
                 width: info.w,
                 height: info.h,
             });
-            await startCanvaAuth(CANVA_REDIRECT_URI);
+            try {
+                await startCanvaAuth(CANVA_REDIRECT_URI);
+            } catch (err) {
+                setMessage(`Canva přihlášení selhalo: ${getErrorMessage(err)}`);
+            }
             return;
         }
 
         await executeCanvaDesign(file, format);
     }
 
-    async function executeCanvaDesign(file: DriveFile, format: CanvaFormat) {
+    async function executeCanvaDesign(file: DriveFile, format: CanvaFormat, tokenOverride?: string) {
         setLoading(true);
         setMessage("");
         try {
             setConvertProgress("Stahuji obrázek…");
-            const data = await downloadFile(accessToken, file.id);
+            const data = await downloadFile(tokenOverride || accessToken, file.id);
 
             let imageData: ArrayBuffer;
             let mimeType = file.mimeType;
@@ -752,7 +755,7 @@ export default function App() {
         }
     }
 
-    // Detect Canva OAuth callback on initial load (before Google login)
+    // Detect Canva OAuth callback on initial load
     const [canvaCallbackPending, setCanvaCallbackPending] = useState<{ code: string; state: string } | null>(() => {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("code");
@@ -764,30 +767,51 @@ export default function App() {
         return null;
     });
 
-    // Execute Canva callback once Google accessToken is available
+    // Auto-login with Google when Canva callback detected, then execute design
     useEffect(() => {
-        if (!canvaCallbackPending || !accessToken) return;
-        const { code, state } = canvaCallbackPending;
-        setCanvaCallbackPending(null);
+        if (!canvaCallbackPending) return;
+        // Auto-trigger Google login silently
+        setLoading(true);
+        setMessage("Dokončuji přihlášení do Canvy…");
+        loginWithGoogle()
+            .then(async ({ user, accessToken: token }) => {
+                const email = user.email?.toLowerCase() ?? "";
+                await initAccessConfig(email);
+                const config = await getAccessConfig();
+                if (!isEmailAllowed(config, email)) {
+                    setAccessDenied(true);
+                    setUserEmail(email);
+                    await logoutFirebase();
+                    setLoading(false);
+                    return;
+                }
+                setAccessToken(token);
+                setUserEmail(email);
+                setUserIsAdmin(isAdmin(config, email));
+                setAccessConfig(config);
+                setScreen("home");
+                setLoading(false);
 
-        handleCanvaCallback(code, state, CANVA_REDIRECT_URI)
-            .then(() => {
-                const pending = getPendingAction();
-                if (pending) {
-                    const file: DriveFile = {
-                        id: pending.fileId,
-                        name: pending.fileName,
-                        mimeType: pending.mimeType,
-                    };
-                    executeCanvaDesign(file, pending.format as CanvaFormat);
-                } else {
-                    setMessage("Canva propojeno — zkus to znovu.");
+                const { code, state } = canvaCallbackPending;
+                setCanvaCallbackPending(null);
+                try {
+                    await handleCanvaCallback(code, state, CANVA_REDIRECT_URI);
+                    const pending = getPendingAction();
+                    if (pending) {
+                        const file: DriveFile = { id: pending.fileId, name: pending.fileName, mimeType: pending.mimeType };
+                        await executeCanvaDesign(file, pending.format as CanvaFormat, token);
+                    } else {
+                        setMessage("Canva propojeno.");
+                    }
+                } catch (err) {
+                    setMessage(`Canva autorizace selhala: ${getErrorMessage(err)}`);
                 }
             })
             .catch((err) => {
-                setMessage(`Canva autorizace selhala: ${getErrorMessage(err)}`);
+                setLoading(false);
+                setMessage(`Přihlášení selhalo: ${getErrorMessage(err)}`);
             });
-    }, [canvaCallbackPending, accessToken]);
+    }, [canvaCallbackPending]);
 
     // ── AI Search ──
 
