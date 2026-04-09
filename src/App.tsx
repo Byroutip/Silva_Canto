@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
-import type { AuthSession, BreadcrumbItem, DriveFile } from "./types";
+import type { BreadcrumbItem, DriveFile } from "./types";
 import { createFolder, deleteFile, downloadFile, listFolder, renameFile, uploadToDrive } from "./lib/drive";
-import { fetchGoogleUserInfo } from "./lib/auth";
 import {
     ALL_RATIOS,
     cropImage,
@@ -11,40 +10,37 @@ import {
     type AspectRatio,
 } from "./lib/convert";
 import CropEditor from "./CropEditor";
+import {
+    loginWithGoogle,
+    logoutFirebase,
+    getAccessConfig,
+    initAccessConfig,
+    isEmailAllowed,
+    isAdmin,
+    addAllowedEmail,
+    removeAllowedEmail,
+    addAdmin,
+    removeAdmin,
+    db,
+    type AccessConfig,
+} from "./lib/firebase";
+import {
+    getUnindexedFiles,
+    batchIndexImages,
+    searchImages,
+    type ImageIndexDoc,
+} from "./lib/imageSearch";
 
 type Screen = "login" | "home" | "browser";
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
 const ROOT_FOLDER_ID = import.meta.env.VITE_ROOT_FOLDER_ID;
 const ROOT_FOLDER_NAME = import.meta.env.VITE_ROOT_FOLDER_NAME || "Kořen";
-const ALLOWED_DOMAIN = (import.meta.env.VITE_ALLOWED_DOMAIN || "").trim().toLowerCase();
-const ALLOWED_EMAILS = (import.meta.env.VITE_ALLOWED_EMAILS || "")
-    .split(",")
-    .map((item: string) => item.trim().toLowerCase())
-    .filter(Boolean);
-
-const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-const DRIVE_SCOPES = "https://www.googleapis.com/auth/drive openid email profile";
 
 function getErrorMessage(error: unknown) {
     if (error instanceof Error) return error.message;
     if (typeof error === "string") return error;
     try { return JSON.stringify(error); }
     catch { return "Operace selhala."; }
-}
-
-function decodeJwtPayload<T = Record<string, unknown>>(token: string): T | null {
-    try {
-        const parts = token.split(".");
-        if (parts.length < 2) return null;
-        const payload = parts[1]
-            .replace(/-/g, "+")
-            .replace(/_/g, "/")
-            .padEnd(Math.ceil(parts[1].length / 4) * 4, "=");
-        return JSON.parse(atob(payload)) as T;
-    } catch { return null; }
 }
 
 function formatMime(mime: string) {
@@ -76,47 +72,6 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// ── Web OAuth helpers ──
-
-function generateCodeVerifier(): string {
-    const array = new Uint8Array(32);
-    crypto.getRandomValues(array);
-    return btoa(String.fromCharCode(...array))
-        .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function generateCodeChallenge(verifier: string): Promise<string> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(verifier);
-    const hash = await crypto.subtle.digest("SHA-256", data);
-    return btoa(String.fromCharCode(...new Uint8Array(hash)))
-        .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function exchangeCodeForToken(code: string, codeVerifier: string, redirectUri: string): Promise<{ access_token: string; id_token?: string }> {
-    const body = new URLSearchParams({
-        code,
-        client_id: GOOGLE_CLIENT_ID,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-        code_verifier: codeVerifier,
-    });
-    // Include client_secret if available (for confidential clients)
-    if (GOOGLE_CLIENT_SECRET) {
-        body.set("client_secret", GOOGLE_CLIENT_SECRET);
-    }
-    const response = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-    });
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Token exchange selhal: ${response.status} ${text}`);
-    }
-    return await response.json();
-}
-
 // ── SVG Icons ──
 
 const Icons = {
@@ -140,6 +95,16 @@ const Icons = {
     folderFill: <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>,
     file: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>,
     emptyFolder: <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" opacity="0.3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>,
+    settings: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+    shield: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    userPlus: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>,
+    users: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    search: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+    searchLg: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+    spark: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>,
+    key: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>,
+    brain: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 3.5 2.5 6.5 6 7v6h2v-6c3.5-.5 6-3.5 6-7a7 7 0 0 0-7-7z"/><path d="M9 12a3 3 0 0 0 6 0"/></svg>,
+    closeSm: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
 };
 
 export default function App() {
@@ -153,8 +118,16 @@ export default function App() {
     ]);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState("");
-    const [loginWaiting, setLoginWaiting] = useState(false);
     const [pendingUploadPicker, setPendingUploadPicker] = useState(false);
+
+    // Access control
+    const [accessConfig, setAccessConfig] = useState<AccessConfig | null>(null);
+    const [userIsAdmin, setUserIsAdmin] = useState(false);
+    const [accessDenied, setAccessDenied] = useState(false);
+
+    // Admin panel
+    const [adminPanelOpen, setAdminPanelOpen] = useState(false);
+    const [newEmailInput, setNewEmailInput] = useState("");
 
     // New folder dialog
     const [newFolderDialog, setNewFolderDialog] = useState(false);
@@ -171,12 +144,12 @@ export default function App() {
     const [renameTarget, setRenameTarget] = useState<DriveFile | null>(null);
     const [renameName, setRenameName] = useState("");
 
-    // Convert dialog (step 1: select ratios, step 2: crop editor)
+    // Convert dialog
     const [convertDialog, setConvertDialog] = useState(false);
     const [convertFile, setConvertFile] = useState<DriveFile | null>(null);
     const [convertRatios, setConvertRatios] = useState<Set<AspectRatio>>(new Set());
     const [convertProgress, setConvertProgress] = useState("");
-    // Crop editor (step 2)
+    // Crop editor
     const [cropEditorOpen, setCropEditorOpen] = useState(false);
     const [cropImageUrl, setCropImageUrl] = useState("");
     const [cropNatW, setCropNatW] = useState(0);
@@ -188,131 +161,109 @@ export default function App() {
     const [previewUrl, setPreviewUrl] = useState("");
     const [previewLoading, setPreviewLoading] = useState(false);
 
+    // AI Search
+    const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState<ImageIndexDoc[] | null>(null);
+    const [searchLoading, setSearchLoading] = useState(false);
+    const [searchScope, setSearchScope] = useState<"folder" | "global">("global");
+    const [indexingProgress, setIndexingProgress] = useState<{ done: number; total: number } | null>(null);
+    const [geminiKeyDialog, setGeminiKeyDialog] = useState(false);
+    const [geminiKeyInput, setGeminiKeyInput] = useState("");
+
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const folderCache = useRef<Map<string, { data: DriveFile[]; ts: number }>>(new Map());
     const CACHE_TTL = 30_000;
+    const indexAbortRef = useRef<AbortController | null>(null);
+    const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const envError = useMemo(() => {
-        if (!GOOGLE_CLIENT_ID) return "Chybí VITE_GOOGLE_CLIENT_ID v .env";
         if (!ROOT_FOLDER_ID) return "Chybí VITE_ROOT_FOLDER_ID v .env";
         return "";
     }, []);
 
     // ── Auth ──
 
-    function isAllowedEmail(email: string) {
-        const normalized = email.trim().toLowerCase();
-        const domainOk = !ALLOWED_DOMAIN || normalized.endsWith(`@${ALLOWED_DOMAIN}`);
-        const listOk = ALLOWED_EMAILS.length === 0 || ALLOWED_EMAILS.includes(normalized);
-        return domainOk && listOk;
-    }
-
-    async function completeLogin(token: string) {
-        const userInfo = await fetchGoogleUserInfo(token);
-        const email = userInfo.email?.trim().toLowerCase();
-        if (!email) throw new Error("Nepodařilo se získat email z Google účtu.");
-        if (!isAllowedEmail(email)) {
-            throw new Error("Tento účet nemá oprávnění aplikaci používat.");
-        }
-        setAccessToken(token);
-        setUserEmail(email);
-        setScreen("home");
-        setMessage("Přihlášení proběhlo.");
-    }
-
-    // Tauri OAuth (external browser + localhost TCP listener)
-    async function handleLoginTauri() {
-        const { invoke } = await import("@tauri-apps/api/core");
-        setLoginWaiting(true);
-        const session = await invoke<AuthSession>("start_google_oauth", {
-            clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET
-        });
-        setLoginWaiting(false);
-        if (session.idToken) {
-            const payload = decodeJwtPayload<{ email?: string }>(session.idToken);
-            const email = payload?.email?.trim().toLowerCase();
-            if (email && isAllowedEmail(email)) {
-                setAccessToken(session.accessToken);
-                setUserEmail(email);
-                setScreen("home");
-                setMessage("Přihlášení proběhlo.");
-                return;
-            }
-        }
-        await completeLogin(session.accessToken);
-    }
-
-    // Web OAuth (PKCE redirect flow)
-    async function handleLoginWeb() {
-        const codeVerifier = generateCodeVerifier();
-        const codeChallenge = await generateCodeChallenge(codeVerifier);
-        sessionStorage.setItem("oauth_code_verifier", codeVerifier);
-
-        const redirectUri = window.location.origin + window.location.pathname;
-        const params = new URLSearchParams({
-            client_id: GOOGLE_CLIENT_ID,
-            redirect_uri: redirectUri,
-            response_type: "code",
-            scope: DRIVE_SCOPES,
-            code_challenge: codeChallenge,
-            code_challenge_method: "S256",
-            access_type: "online",
-            prompt: "consent",
-        });
-        window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-    }
-
     async function handleLogin() {
         if (envError) { setMessage(envError); return; }
-        setLoading(true); setMessage("");
+        setLoading(true); setMessage(""); setAccessDenied(false);
         try {
-            if (IS_TAURI) {
-                await handleLoginTauri();
-            } else {
-                await handleLoginWeb();
+            const { user, accessToken: token } = await loginWithGoogle();
+            const email = user.email?.toLowerCase() ?? "";
+            if (!email) throw new Error("Nepodařilo se získat email.");
+
+            // Init access config if first login ever
+            await initAccessConfig(email);
+            const config = await getAccessConfig();
+            setAccessConfig(config);
+
+            if (!isEmailAllowed(config, email)) {
+                setAccessDenied(true);
+                setUserEmail(email);
+                await logoutFirebase();
+                setLoading(false);
+                return;
             }
-        } catch (error) {
-            setAccessToken(""); setUserEmail(""); setScreen("login");
-            setMessage(getErrorMessage(error));
-        }
-        finally { setLoading(false); setLoginWaiting(false); }
+
+            setAccessToken(token);
+            setUserEmail(email);
+            setUserIsAdmin(isAdmin(config, email));
+            setScreen("home");
+            setMessage("Přihlášení proběhlo.");
+        } catch (error) { setMessage(getErrorMessage(error)); }
+        finally { setLoading(false); }
     }
 
-    // Handle OAuth redirect callback (web mode)
-    useEffect(() => {
-        if (IS_TAURI) return;
-        const params = new URLSearchParams(window.location.search);
-        const code = params.get("code");
-        if (!code) return;
-
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-
-        const codeVerifier = sessionStorage.getItem("oauth_code_verifier");
-        if (!codeVerifier) {
-            setMessage("Chybí code_verifier — zkuste se přihlásit znovu.");
-            return;
-        }
-        sessionStorage.removeItem("oauth_code_verifier");
-
-        const redirectUri = window.location.origin + window.location.pathname;
-        setLoading(true); setMessage("");
-
-        exchangeCodeForToken(code, codeVerifier, redirectUri)
-            .then(tokenData => completeLogin(tokenData.access_token))
-            .catch(error => {
-                setMessage(getErrorMessage(error));
-                setAccessToken(""); setUserEmail(""); setScreen("login");
-            })
-            .finally(() => setLoading(false));
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
     function handleLogout() {
+        logoutFirebase();
         setAccessToken(""); setUserEmail(""); setFiles([]);
         setCurrentFolderId(ROOT_FOLDER_ID || "");
         setBreadcrumbs([{ id: ROOT_FOLDER_ID || "", name: ROOT_FOLDER_NAME }]);
         setSelected(new Set());
+        setAccessDenied(false);
+        setUserIsAdmin(false);
         setScreen("login"); setMessage("Odhlášeno.");
+    }
+
+    // ── Admin: manage emails ──
+
+    async function refreshAccessConfig() {
+        const config = await getAccessConfig();
+        setAccessConfig(config);
+        setUserIsAdmin(isAdmin(config, userEmail));
+    }
+
+    async function handleAddEmail() {
+        const email = newEmailInput.trim().toLowerCase();
+        if (!email || !email.includes("@")) return;
+        setLoading(true);
+        try {
+            await addAllowedEmail(email);
+            await refreshAccessConfig();
+            setNewEmailInput("");
+            setMessage(`${email} přidán.`);
+        } catch (error) { setMessage(getErrorMessage(error)); }
+        finally { setLoading(false); }
+    }
+
+    async function handleRemoveEmail(email: string) {
+        setLoading(true);
+        try {
+            await removeAllowedEmail(email);
+            await refreshAccessConfig();
+            setMessage(`${email} odebrán.`);
+        } catch (error) { setMessage(getErrorMessage(error)); }
+        finally { setLoading(false); }
+    }
+
+    async function handleToggleAdmin(email: string, makeAdmin: boolean) {
+        setLoading(true);
+        try {
+            if (makeAdmin) await addAdmin(email);
+            else await removeAdmin(email);
+            await refreshAccessConfig();
+            setMessage(`${email} — admin ${makeAdmin ? "přidán" : "odebrán"}.`);
+        } catch (error) { setMessage(getErrorMessage(error)); }
+        finally { setLoading(false); }
     }
 
     // ── Folder navigation ──
@@ -484,7 +435,7 @@ export default function App() {
         finally { setLoading(false); }
     }
 
-    // ── Download to device ──
+    // ── Download ──
 
     async function handleDownload(file: DriveFile) {
         setLoading(true); setMessage("");
@@ -510,9 +461,7 @@ export default function App() {
         } catch (error) {
             setMessage(getErrorMessage(error));
             setPreviewFile(null);
-        } finally {
-            setPreviewLoading(false);
-        }
+        } finally { setPreviewLoading(false); }
     }
 
     function closePreview() {
@@ -521,7 +470,7 @@ export default function App() {
         setPreviewUrl("");
     }
 
-    // ── Convert (step 1: ratio selection, step 2: interactive crop) ──
+    // ── Convert ──
 
     function openConvertDialog(file: DriveFile) {
         setConvertFile(file);
@@ -547,28 +496,25 @@ export default function App() {
     async function handleConvertNext() {
         if (!convertFile || convertRatios.size === 0) return;
         const file = convertFile;
-        const isImage = file.mimeType.startsWith("image/");
-
+        const img = file.mimeType.startsWith("image/");
         setConvertDialog(false);
         setLoading(true); setMessage("");
-
         try {
             setConvertProgress("Stahuji soubor...");
             const data = await downloadFile(accessToken, file.id);
             setCropFileData(data);
-
-            if (isImage) {
+            if (img) {
                 const blob = new Blob([data], { type: file.mimeType });
                 const url = URL.createObjectURL(blob);
-                const img = new Image();
+                const image = new Image();
                 await new Promise<void>((resolve, reject) => {
-                    img.onload = () => resolve();
-                    img.onerror = () => reject(new Error("Nelze načíst obrázek."));
-                    img.src = url;
+                    image.onload = () => resolve();
+                    image.onerror = () => reject(new Error("Nelze načíst obrázek."));
+                    image.src = url;
                 });
                 setCropImageUrl(url);
-                setCropNatW(img.naturalWidth);
-                setCropNatH(img.naturalHeight);
+                setCropNatW(image.naturalWidth);
+                setCropNatH(image.naturalHeight);
                 setConvertProgress("");
                 setLoading(false);
                 setCropEditorOpen(true);
@@ -586,7 +532,6 @@ export default function App() {
         setCropEditorOpen(false);
         if (cropImageUrl) URL.revokeObjectURL(cropImageUrl);
         setCropImageUrl("");
-
         if (!convertFile || !cropFileData) return;
         setLoading(true); setMessage("");
         await processConvert(convertFile, [...convertRatios], cropFileData, positions);
@@ -600,9 +545,7 @@ export default function App() {
     }
 
     async function processConvert(
-        file: DriveFile,
-        ratios: AspectRatio[],
-        data: ArrayBuffer,
+        file: DriveFile, ratios: AspectRatio[], data: ArrayBuffer,
         positions: Partial<Record<AspectRatio, { panX: number; panY: number }>>
     ) {
         const isVid = file.mimeType.startsWith("video/");
@@ -626,9 +569,104 @@ export default function App() {
         } catch (error) {
             setConvertProgress("");
             setMessage(getErrorMessage(error));
-        } finally {
-            setLoading(false);
-            setCropFileData(null);
+        } finally { setLoading(false); setCropFileData(null); }
+    }
+
+    // ── AI Search ──
+
+    function getGeminiKey(): string {
+        return localStorage.getItem("gemini_api_key") ?? "";
+    }
+
+    function saveGeminiKey(key: string) {
+        localStorage.setItem("gemini_api_key", key);
+    }
+
+    async function triggerIndexing(folderFiles: DriveFile[], folderId: string) {
+        const apiKey = getGeminiKey();
+        if (!apiKey) return;
+        try {
+            const unindexed = await getUnindexedFiles(db, folderFiles);
+            if (unindexed.length === 0) return;
+
+            // Abort previous indexing
+            indexAbortRef.current?.abort();
+            const controller = new AbortController();
+            indexAbortRef.current = controller;
+
+            setIndexingProgress({ done: 0, total: unindexed.length });
+
+            const result = await batchIndexImages(
+                db, unindexed, folderId, accessToken, apiKey,
+                (done, total) => setIndexingProgress({ done, total }),
+                controller.signal
+            );
+
+            if (!controller.signal.aborted) {
+                setIndexingProgress(null);
+                if (result.indexed > 0) {
+                    setMessage(`Zaindexováno ${result.indexed} obrázků${result.errors > 0 ? ` (${result.errors} chyb)` : ""}.`);
+                }
+            }
+        } catch {
+            setIndexingProgress(null);
+        }
+    }
+
+    function handleSearchInput(value: string) {
+        setSearchQuery(value);
+        if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+
+        if (!value.trim()) {
+            setSearchResults(null);
+            return;
+        }
+
+        searchTimeoutRef.current = setTimeout(async () => {
+            setSearchLoading(true);
+            try {
+                const results = await searchImages(db, value, searchScope, currentFolderId);
+                setSearchResults(results);
+            } catch (error) {
+                console.warn("Search failed:", error);
+                setSearchResults([]);
+            } finally {
+                setSearchLoading(false);
+            }
+        }, 400);
+    }
+
+    function clearSearch() {
+        setSearchQuery("");
+        setSearchResults(null);
+    }
+
+    function handleSearchResultClick(result: ImageIndexDoc) {
+        // Find the file in the current file list or create a minimal DriveFile to preview
+        const file = files.find(f => f.id === result.fileId);
+        if (file) {
+            openPreview(file);
+        } else {
+            // File is in another folder — create a minimal object for preview
+            const minFile: DriveFile = {
+                id: result.fileId,
+                name: result.fileName,
+                mimeType: "image/jpeg", // default, will work for preview
+            };
+            openPreview(minFile);
+        }
+    }
+
+    function handleGeminiKeySave() {
+        const key = geminiKeyInput.trim();
+        if (!key) return;
+        saveGeminiKey(key);
+        setGeminiKeyDialog(false);
+        setGeminiKeyInput("");
+        setMessage("Gemini API klíč uložen. Indexace začne automaticky.");
+        // Trigger indexing for current folder
+        if (screen === "browser") {
+            triggerIndexing(files, currentFolderId);
         }
     }
 
@@ -640,6 +678,14 @@ export default function App() {
             setPendingUploadPicker(false);
         }
     }, [screen, pendingUploadPicker]);
+
+    // Auto-index when folder loads
+    useEffect(() => {
+        if (screen === "browser" && files.length > 0 && accessToken) {
+            triggerIndexing(files, currentFolderId);
+        }
+        return () => { indexAbortRef.current?.abort(); };
+    }, [screen, currentFolderId, files, accessToken]);
 
     // ── Derived ──
 
@@ -655,6 +701,10 @@ export default function App() {
         return n === 1 ? "1 soubor" : `${n} souborů`;
     }
 
+    const allEmails = accessConfig
+        ? [...new Set([...accessConfig.allowedEmails, ...accessConfig.admins])]
+        : [];
+
     // ── Render ──
 
     return (
@@ -663,32 +713,19 @@ export default function App() {
             {screen === "login" && (
                 <div className="login-wrapper">
                     <div className="login-card">
-                        {!loginWaiting ? (
-                            <>
-                                <div className="login-logo">CS</div>
-                                <h1 className="login-title">Canto Silva</h1>
-                                <p className="login-lead">Přihlaste se Google účtem pro přístup ke knihovně.</p>
-                                <button className="btn btn-primary btn-lg" onClick={handleLogin} disabled={loading}>
-                                    {Icons.login} Přihlásit se
-                                </button>
-                                {message && <p className="login-error">{message}</p>}
-                                {(ALLOWED_DOMAIN || ALLOWED_EMAILS.length > 0) && (
-                                    <div className="login-hint">
-                                        {ALLOWED_DOMAIN && <span>Doména: {ALLOWED_DOMAIN}</span>}
-                                        {ALLOWED_EMAILS.length > 0 && <span>Povoleno: {ALLOWED_EMAILS.join(", ")}</span>}
-                                    </div>
-                                )}
-                            </>
-                        ) : (
-                            <div className="login-waiting">
-                                <div className="login-waiting-pulse" />
-                                <h2>Čekám na přihlášení…</h2>
-                                <p>Dokončete přihlášení v prohlížeči,<br />který se právě otevřel.</p>
-                                <div className="login-waiting-dots">
-                                    <span /><span /><span />
-                                </div>
+                        <div className="login-logo">CS</div>
+                        <h1 className="login-title">Canto Silva</h1>
+                        <p className="login-lead">Přihlaste se Google účtem pro přístup ke knihovně.</p>
+                        <button className="btn btn-primary btn-lg" onClick={handleLogin} disabled={loading}>
+                            {Icons.login} Přihlásit se přes Google
+                        </button>
+                        {accessDenied && (
+                            <div className="login-denied">
+                                <p>Účet <strong>{userEmail}</strong> nemá oprávnění.</p>
+                                <p>Požádejte administrátora o přidání vašeho emailu.</p>
                             </div>
                         )}
+                        {message && !accessDenied && <p className="login-error">{message}</p>}
                     </div>
                 </div>
             )}
@@ -701,13 +738,21 @@ export default function App() {
                             <div className="header-logo">CS</div>
                             <div>
                                 <h1 className="header-title">Canto Silva</h1>
-                                <p className="header-email">{userEmail}</p>
+                                <p className="header-email">
+                                    {userEmail}
+                                    {userIsAdmin && <span className="admin-badge">Admin</span>}
+                                </p>
                             </div>
                         </div>
                         <div className="header-actions">
                             {screen === "browser" && (
                                 <button className="btn btn-ghost" onClick={() => { setScreen("home"); setSelected(new Set()); }} disabled={loading}>
                                     {Icons.home} Domů
+                                </button>
+                            )}
+                            {userIsAdmin && (
+                                <button className="btn btn-ghost" onClick={() => { setAdminPanelOpen(true); refreshAccessConfig(); }} disabled={loading}>
+                                    {Icons.settings} Oprávnění
                                 </button>
                             )}
                             <button className="btn btn-ghost" onClick={handleLogout} disabled={loading}>
@@ -729,6 +774,23 @@ export default function App() {
                                 <span className="tile-title">Nahrát</span>
                                 <span className="tile-desc">Vybrat fotku nebo video</span>
                             </button>
+                            <button className="home-tile" onClick={() => {
+                                if (!getGeminiKey()) { setGeminiKeyDialog(true); return; }
+                                setScreen("browser");
+                                handleOpenLibrary();
+                                setTimeout(() => document.getElementById("search-input")?.focus(), 300);
+                            }} disabled={loading}>
+                                <div className="tile-icon">{Icons.searchLg}</div>
+                                <span className="tile-title">AI Vyhledávání</span>
+                                <span className="tile-desc">Hledat obrázky podle obsahu</span>
+                            </button>
+                            {userIsAdmin && (
+                                <button className="home-tile" onClick={() => { setAdminPanelOpen(true); refreshAccessConfig(); }} disabled={loading}>
+                                    <div className="tile-icon">{Icons.users}</div>
+                                    <span className="tile-title">Oprávnění</span>
+                                    <span className="tile-desc">Spravovat přístupy uživatelů</span>
+                                </button>
+                            )}
                         </div>
                     )}
 
@@ -747,6 +809,89 @@ export default function App() {
                                     </span>
                                 ))}
                             </nav>
+
+                            {/* Search bar */}
+                            <div className="search-bar-wrap">
+                                <div className="search-bar">
+                                    <span className="search-bar-icon">{Icons.search}</span>
+                                    <input
+                                        id="search-input"
+                                        className="search-bar-input"
+                                        type="text"
+                                        placeholder="Hledat obrázky... (např. židle, les, auto)"
+                                        value={searchQuery}
+                                        onChange={(e) => handleSearchInput(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === "Escape") clearSearch(); }}
+                                    />
+                                    {searchQuery && (
+                                        <button className="search-bar-clear" onClick={clearSearch} title="Vymazat">
+                                            {Icons.closeSm}
+                                        </button>
+                                    )}
+                                    <div className="search-scope-toggle">
+                                        <button
+                                            className={`search-scope-btn ${searchScope === "folder" ? "search-scope-active" : ""}`}
+                                            onClick={() => { setSearchScope("folder"); if (searchQuery) handleSearchInput(searchQuery); }}
+                                            title="Jen tato složka"
+                                        >Složka</button>
+                                        <button
+                                            className={`search-scope-btn ${searchScope === "global" ? "search-scope-active" : ""}`}
+                                            onClick={() => { setSearchScope("global"); if (searchQuery) handleSearchInput(searchQuery); }}
+                                            title="Všechny složky"
+                                        >Vše</button>
+                                    </div>
+                                    {!getGeminiKey() && (
+                                        <button className="btn btn-accent btn-sm" onClick={() => setGeminiKeyDialog(true)} title="Nastavit API klíč">
+                                            {Icons.key} API klíč
+                                        </button>
+                                    )}
+                                </div>
+                                {indexingProgress && (
+                                    <div className="indexing-status">
+                                        <span className="spinner" style={{ width: 12, height: 12 }} />
+                                        <span>Indexuji obrázky… {indexingProgress.done}/{indexingProgress.total}</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Search results */}
+                            {searchResults !== null && (
+                                <div className="search-results">
+                                    <div className="search-results-header">
+                                        <span className="search-results-count">
+                                            {searchLoading ? "Hledám…" :
+                                                searchResults.length === 0 ? `Žádné výsledky pro „${searchQuery}"` :
+                                                    `${searchResults.length} ${searchResults.length === 1 ? "výsledek" : searchResults.length < 5 ? "výsledky" : "výsledků"}`}
+                                        </span>
+                                        <button className="btn btn-ghost btn-sm" onClick={clearSearch}>Zavřít hledání</button>
+                                    </div>
+                                    {searchResults.length > 0 && (
+                                        <div className="search-results-grid">
+                                            {searchResults.map((result) => (
+                                                <button
+                                                    key={result.fileId}
+                                                    className="search-result-card"
+                                                    onClick={() => handleSearchResultClick(result)}
+                                                >
+                                                    <div className="search-result-icon">{Icons.file}</div>
+                                                    <div className="search-result-info">
+                                                        <span className="search-result-name">{result.fileName}</span>
+                                                        <span className="search-result-desc">
+                                                            {result.descriptionCs.slice(0, 100)}
+                                                            {result.descriptionCs.length > 100 ? "…" : ""}
+                                                        </span>
+                                                        <div className="search-result-tags">
+                                                            {result.tags.slice(0, 6).map((tag, i) => (
+                                                                <span key={i} className="search-tag">{tag}</span>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             <div className="toolbar">
                                 <div className="toolbar-left">
@@ -784,7 +929,6 @@ export default function App() {
                                 )}
                             </div>
 
-                            {/* File table */}
                             <div className="file-table">
                                 {files.length > 0 && (
                                     <div className="file-table-head">
@@ -805,23 +949,19 @@ export default function App() {
                                     </div>
                                 ) : files.map((file) => {
                                     const isFld = isFolder(file.mimeType);
-                                    const isSelected = selected.has(file.id);
+                                    const isSel = selected.has(file.id);
                                     const canPreview = isMedia(file.mimeType);
                                     const canDownload = !isFld;
                                     const canConvert = isMedia(file.mimeType);
 
                                     return (
-                                        <div className={`file-row ${isFld ? "file-row-folder" : ""} ${isSelected ? "file-row-selected" : ""}`} key={file.id}>
+                                        <div className={`file-row ${isFld ? "file-row-folder" : ""} ${isSel ? "file-row-selected" : ""}`} key={file.id}>
                                             <label className="checkbox-cell" onClick={(e) => e.stopPropagation()}>
-                                                <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(file.id)} />
+                                                <input type="checkbox" checked={isSel} onChange={() => toggleSelect(file.id)} />
                                             </label>
-
                                             <div
                                                 className="col-name"
-                                                onClick={() => {
-                                                    if (isFld) handleFolderClick(file);
-                                                    else if (canPreview) openPreview(file);
-                                                }}
+                                                onClick={() => { if (isFld) handleFolderClick(file); else if (canPreview) openPreview(file); }}
                                                 style={{ cursor: (isFld || canPreview) ? "pointer" : "default" }}
                                             >
                                                 <span className={`file-icon ${isFld ? "icon-folder" : "icon-file"}`}>
@@ -829,37 +969,24 @@ export default function App() {
                                                 </span>
                                                 <span className="file-name-text">{file.name}</span>
                                             </div>
-
                                             <span className="col-type">{formatMime(file.mimeType)}</span>
-
                                             <span className="col-date">
                                                 {file.modifiedTime
                                                     ? new Date(file.modifiedTime).toLocaleDateString("cs-CZ", { day: "numeric", month: "short", year: "numeric" })
                                                     : "—"}
                                             </span>
-
                                             <div className="col-actions">
                                                 {canPreview && (
-                                                    <button className="btn-icon" title="Náhled" onClick={() => openPreview(file)} disabled={loading}>
-                                                        {Icons.eye}
-                                                    </button>
+                                                    <button className="btn-icon" title="Náhled" onClick={() => openPreview(file)} disabled={loading}>{Icons.eye}</button>
                                                 )}
-                                                <button className="btn-icon" title="Přejmenovat" onClick={() => openRenameDialog(file)} disabled={loading}>
-                                                    {Icons.rename}
-                                                </button>
+                                                <button className="btn-icon" title="Přejmenovat" onClick={() => openRenameDialog(file)} disabled={loading}>{Icons.rename}</button>
                                                 {canDownload && (
-                                                    <button className="btn-icon" title="Stáhnout" onClick={() => handleDownload(file)} disabled={loading}>
-                                                        {Icons.download}
-                                                    </button>
+                                                    <button className="btn-icon" title="Stáhnout" onClick={() => handleDownload(file)} disabled={loading}>{Icons.download}</button>
                                                 )}
                                                 {canConvert && (
-                                                    <button className="btn-icon btn-icon-accent" title="Konvertovat" onClick={() => openConvertDialog(file)} disabled={loading}>
-                                                        {Icons.crop}
-                                                    </button>
+                                                    <button className="btn-icon btn-icon-accent" title="Konvertovat" onClick={() => openConvertDialog(file)} disabled={loading}>{Icons.crop}</button>
                                                 )}
-                                                <button className="btn-icon btn-icon-danger" title="Smazat" onClick={() => handleDeleteSingle(file)} disabled={loading}>
-                                                    {Icons.trash}
-                                                </button>
+                                                <button className="btn-icon btn-icon-danger" title="Smazat" onClick={() => handleDeleteSingle(file)} disabled={loading}>{Icons.trash}</button>
                                             </div>
                                         </div>
                                     );
@@ -887,16 +1014,10 @@ export default function App() {
                 <div className="overlay" onClick={() => setNewFolderDialog(false)}>
                     <div className="dialog" onClick={(e) => e.stopPropagation()}>
                         <h2>Nová složka</h2>
-                        <input
-                            className="dialog-input" type="text" placeholder="Název složky"
-                            value={newFolderName}
+                        <input className="dialog-input" type="text" placeholder="Název složky" value={newFolderName}
                             onChange={(e) => setNewFolderName(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") handleCreateFolderConfirm();
-                                if (e.key === "Escape") setNewFolderDialog(false);
-                            }}
-                            autoFocus
-                        />
+                            onKeyDown={(e) => { if (e.key === "Enter") handleCreateFolderConfirm(); if (e.key === "Escape") setNewFolderDialog(false); }}
+                            autoFocus />
                         <div className="dialog-actions">
                             <button className="btn btn-ghost" onClick={() => setNewFolderDialog(false)}>Zrušit</button>
                             <button className="btn btn-primary" onClick={handleCreateFolderConfirm} disabled={!newFolderName.trim()}>Vytvořit</button>
@@ -911,28 +1032,14 @@ export default function App() {
                     <div className="dialog" onClick={(e) => e.stopPropagation()}>
                         <div className="dialog-icon-accent">{Icons.renameLg}</div>
                         <h2>Přejmenovat</h2>
-                        <input
-                            className="dialog-input" type="text" placeholder="Nový název"
-                            value={renameName}
+                        <input className="dialog-input" type="text" placeholder="Nový název" value={renameName}
                             onChange={(e) => setRenameName(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") handleRenameConfirm();
-                                if (e.key === "Escape") setRenameDialog(false);
-                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") handleRenameConfirm(); if (e.key === "Escape") setRenameDialog(false); }}
                             autoFocus
-                            onFocus={(e) => {
-                                const dot = renameName.lastIndexOf(".");
-                                if (dot > 0) e.target.setSelectionRange(0, dot);
-                                else e.target.select();
-                            }}
-                        />
+                            onFocus={(e) => { const d = renameName.lastIndexOf("."); if (d > 0) e.target.setSelectionRange(0, d); else e.target.select(); }} />
                         <div className="dialog-actions">
                             <button className="btn btn-ghost" onClick={() => setRenameDialog(false)}>Zrušit</button>
-                            <button
-                                className="btn btn-primary"
-                                onClick={handleRenameConfirm}
-                                disabled={!renameName.trim() || renameName.trim() === renameTarget.name}
-                            >Přejmenovat</button>
+                            <button className="btn btn-primary" onClick={handleRenameConfirm} disabled={!renameName.trim() || renameName.trim() === renameTarget.name}>Přejmenovat</button>
                         </div>
                     </div>
                 </div>
@@ -959,17 +1066,10 @@ export default function App() {
                     <div className="dialog dialog-convert" onClick={(e) => e.stopPropagation()}>
                         <div className="dialog-icon-accent">{Icons.cropLg}</div>
                         <h2>Konvertovat</h2>
-                        <p className="dialog-desc">
-                            <strong>{convertFile.name}</strong><br />
-                            Vyber poměry stran. Výsledky se uloží do stejné složky.
-                        </p>
+                        <p className="dialog-desc"><strong>{convertFile.name}</strong><br />Vyber poměry stran. Výsledky se uloží do stejné složky.</p>
                         <div className="ratio-grid">
                             {ALL_RATIOS.map((r) => (
-                                <button
-                                    key={r}
-                                    className={`ratio-card ${convertRatios.has(r) ? "ratio-card-active" : ""}`}
-                                    onClick={() => toggleConvertRatio(r)}
-                                >
+                                <button key={r} className={`ratio-card ${convertRatios.has(r) ? "ratio-card-active" : ""}`} onClick={() => toggleConvertRatio(r)}>
                                     <div className={`ratio-preview ratio-preview-${r.replace(":", "x")}`} />
                                     <span className="ratio-label">{r}</span>
                                 </button>
@@ -981,9 +1081,7 @@ export default function App() {
                         </label>
                         <div className="dialog-actions">
                             <button className="btn btn-ghost" onClick={() => setConvertDialog(false)}>Zrušit</button>
-                            <button className="btn btn-primary" onClick={handleConvertNext} disabled={convertRatios.size === 0}>
-                                Další {convertRatios.size > 0 ? `(${convertRatios.size})` : ""}
-                            </button>
+                            <button className="btn btn-primary" onClick={handleConvertNext} disabled={convertRatios.size === 0}>Další {convertRatios.size > 0 ? `(${convertRatios.size})` : ""}</button>
                         </div>
                     </div>
                 </div>
@@ -991,39 +1089,117 @@ export default function App() {
 
             {/* ── Crop editor ── */}
             {cropEditorOpen && convertFile && (
-                <CropEditor
-                    imageUrl={cropImageUrl}
-                    naturalWidth={cropNatW}
-                    naturalHeight={cropNatH}
-                    ratios={[...convertRatios]}
-                    onConfirm={handleCropConfirm}
-                    onCancel={handleCropCancel}
-                />
+                <CropEditor imageUrl={cropImageUrl} naturalWidth={cropNatW} naturalHeight={cropNatH}
+                    ratios={[...convertRatios]} onConfirm={handleCropConfirm} onCancel={handleCropCancel} />
+            )}
+
+            {/* ── Admin panel ── */}
+            {adminPanelOpen && accessConfig && (
+                <div className="overlay" onClick={() => setAdminPanelOpen(false)}>
+                    <div className="dialog dialog-admin" onClick={(e) => e.stopPropagation()}>
+                        <div className="dialog-icon-accent">{Icons.users}</div>
+                        <h2>Správa oprávnění</h2>
+                        <p className="dialog-desc">Přidej emaily uživatelů, kteří mají přístup k aplikaci.</p>
+
+                        <div className="admin-add-row">
+                            <input
+                                className="dialog-input" type="email" placeholder="email@example.com"
+                                value={newEmailInput}
+                                onChange={(e) => setNewEmailInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") handleAddEmail(); }}
+                            />
+                            <button className="btn btn-primary" onClick={handleAddEmail} disabled={!newEmailInput.trim().includes("@") || loading}>
+                                {Icons.userPlus} Přidat
+                            </button>
+                        </div>
+
+                        <div className="admin-email-list">
+                            {allEmails.length === 0 && (
+                                <p className="admin-empty">Zatím žádní uživatelé.</p>
+                            )}
+                            {allEmails.sort().map((email) => {
+                                const emailIsAdmin = accessConfig.admins.includes(email);
+                                const isSelf = email === userEmail;
+                                return (
+                                    <div key={email} className="admin-email-row">
+                                        <div className="admin-email-info">
+                                            <span className="admin-email-text">{email}</span>
+                                            {emailIsAdmin && <span className="admin-role-badge">Admin</span>}
+                                        </div>
+                                        <div className="admin-email-actions">
+                                            {!isSelf && (
+                                                <>
+                                                    <button
+                                                        className={`btn btn-sm ${emailIsAdmin ? "btn-secondary" : "btn-accent"}`}
+                                                        onClick={() => handleToggleAdmin(email, !emailIsAdmin)}
+                                                        disabled={loading}
+                                                        title={emailIsAdmin ? "Odebrat admin" : "Udělat adminem"}
+                                                    >
+                                                        {Icons.shield} {emailIsAdmin ? "Odebrat admin" : "Admin"}
+                                                    </button>
+                                                    <button
+                                                        className="btn btn-sm btn-danger"
+                                                        onClick={() => handleRemoveEmail(email)}
+                                                        disabled={loading}
+                                                    >
+                                                        {Icons.trash}
+                                                    </button>
+                                                </>
+                                            )}
+                                            {isSelf && <span className="admin-self-label">Vy</span>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="dialog-actions">
+                            <button className="btn btn-primary" onClick={() => setAdminPanelOpen(false)}>Zavřít</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Gemini API Key dialog ── */}
+            {geminiKeyDialog && (
+                <div className="overlay" onClick={() => setGeminiKeyDialog(false)}>
+                    <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                        <div className="dialog-icon-accent"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></div>
+                        <h2>Gemini API klíč</h2>
+                        <p className="dialog-desc">
+                            Pro AI vyhledávání obrázků potřebuješ Gemini API klíč (zdarma).<br />
+                            Získej ho na <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>aistudio.google.com/apikey</a>
+                        </p>
+                        <input
+                            className="dialog-input"
+                            type="text"
+                            placeholder="AIza..."
+                            value={geminiKeyInput}
+                            onChange={(e) => setGeminiKeyInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") handleGeminiKeySave(); if (e.key === "Escape") setGeminiKeyDialog(false); }}
+                            autoFocus
+                        />
+                        <div className="dialog-actions">
+                            <button className="btn btn-ghost" onClick={() => setGeminiKeyDialog(false)}>Zrušit</button>
+                            <button className="btn btn-primary" onClick={handleGeminiKeySave} disabled={!geminiKeyInput.trim()}>Uložit</button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* ── Preview modal ── */}
             {previewFile && (
                 <div className="preview-overlay" onClick={closePreview}>
-                    <button className="preview-close" onClick={closePreview} title="Zavřít">
-                        {Icons.close}
-                    </button>
-
+                    <button className="preview-close" onClick={closePreview} title="Zavřít">{Icons.close}</button>
                     <div className="preview-header">
                         <span className="preview-filename">{previewFile.name}</span>
-                        <button
-                            className="btn btn-ghost btn-sm preview-download-btn"
-                            onClick={(e) => { e.stopPropagation(); handleDownload(previewFile); }}
-                        >
+                        <button className="btn btn-ghost btn-sm preview-download-btn" onClick={(e) => { e.stopPropagation(); handleDownload(previewFile); }}>
                             {Icons.download} Stáhnout
                         </button>
                     </div>
-
                     <div className="preview-content" onClick={(e) => e.stopPropagation()}>
                         {previewLoading && (
-                            <div className="preview-loading">
-                                <span className="spinner spinner-lg" />
-                                <span>Načítám náhled…</span>
-                            </div>
+                            <div className="preview-loading"><span className="spinner spinner-lg" /><span>Načítám náhled…</span></div>
                         )}
                         {previewUrl && previewFile.mimeType.startsWith("image/") && (
                             <img className="preview-media" src={previewUrl} alt={previewFile.name} />
