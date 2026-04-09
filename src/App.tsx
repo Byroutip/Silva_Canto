@@ -648,13 +648,12 @@ export default function App() {
 
     type CanvaFormat = "1:1" | "4:5" | "16:9" | "9:16" | "original";
 
-    // Canva design type IDs for preset sizes
-    const CANVA_TYPES: Record<CanvaFormat, { label: string; url: string }> = {
-        "1:1": { label: "1:1 (Instagram post)", url: "https://www.canva.com/instagram-posts/templates/" },
-        "4:5": { label: "4:5 (Instagram portrét)", url: "https://www.canva.com/instagram-posts/templates/" },
-        "16:9": { label: "16:9 (Prezentace)", url: "https://www.canva.com/presentations/templates/" },
-        "9:16": { label: "9:16 (Instagram story)", url: "https://www.canva.com/instagram-stories/templates/" },
-        "original": { label: "Originál", url: "https://www.canva.com/" },
+    const CANVA_FORMAT_INFO: Record<CanvaFormat, { label: string; canvaUrl: string }> = {
+        "1:1": { label: "1:1 (Instagram post)", canvaUrl: "https://www.canva.com/instagram-posts/templates/" },
+        "4:5": { label: "4:5 (Instagram portrét)", canvaUrl: "https://www.canva.com/instagram-posts/templates/" },
+        "16:9": { label: "16:9 (Prezentace)", canvaUrl: "https://www.canva.com/presentations/templates/" },
+        "9:16": { label: "9:16 (Instagram story)", canvaUrl: "https://www.canva.com/instagram-stories/templates/" },
+        "original": { label: "Originál", canvaUrl: "https://www.canva.com/" },
     };
 
     function openCanvaDialog(file: DriveFile) {
@@ -662,9 +661,42 @@ export default function App() {
         setCanvaDialog(true);
     }
 
-    function openInCanva(format: CanvaFormat) {
+    async function openInCanva(format: CanvaFormat) {
+        if (!canvaFile) return;
         setCanvaDialog(false);
-        window.open(CANVA_TYPES[format].url, "_blank");
+        setLoading(true);
+        setMessage("");
+        try {
+            setConvertProgress("Stahuji obrázek…");
+            const data = await downloadFile(accessToken, canvaFile.id);
+
+            if (format === "original") {
+                // Download original without cropping
+                const blob = new Blob([data], { type: canvaFile.mimeType });
+                const dotIdx = canvaFile.name.lastIndexOf(".");
+                const baseName = dotIdx > 0 ? canvaFile.name.substring(0, dotIdx) : canvaFile.name;
+                const ext = dotIdx > 0 ? canvaFile.name.substring(dotIdx) : ".jpg";
+                triggerBrowserDownload(blob, `${baseName}_canva${ext}`);
+            } else {
+                // Crop to selected ratio and download
+                setConvertProgress(`Ořezávám na ${format}…`);
+                const cropped = await cropImage(data, canvaFile.mimeType, format as AspectRatio);
+                const dotIdx = canvaFile.name.lastIndexOf(".");
+                const baseName = dotIdx > 0 ? canvaFile.name.substring(0, dotIdx) : canvaFile.name;
+                const ext = canvaFile.mimeType === "image/png" ? ".png" : ".jpg";
+                triggerBrowserDownload(cropped, `${baseName}_${format.replace(":", "x")}${ext}`);
+            }
+
+            setConvertProgress("");
+            // Open Canva with the right design type
+            window.open(CANVA_FORMAT_INFO[format].canvaUrl, "_blank");
+            setMessage("Obrázek stažen — vlož ho do nového návrhu v Canvě (přetáhni nebo Nahrávání).");
+        } catch (error) {
+            setConvertProgress("");
+            setMessage(getErrorMessage(error));
+        } finally {
+            setLoading(false);
+        }
     }
 
     // ── AI Search ──
@@ -1431,16 +1463,16 @@ export default function App() {
                     <div className="dialog dialog-convert" onClick={(e) => e.stopPropagation()}>
                         <div className="dialog-icon-accent">{Icons.canvaLg}</div>
                         <h2>Otevřít v Canvě</h2>
-                        <p className="dialog-desc"><strong>{canvaFile.name}</strong><br />Vyber formát projektu v Canvě.</p>
+                        <p className="dialog-desc"><strong>{canvaFile.name}</strong><br />Obrázek se ořízne do vybraného formátu, stáhne se a otevře se Canva s novým návrhem.</p>
                         <div className="ratio-grid">
                             {(["1:1", "4:5", "16:9", "9:16", "original"] as const).map((r) => (
-                                <button key={r} className="ratio-card" onClick={() => openInCanva(r)}>
+                                <button key={r} className="ratio-card" onClick={() => openInCanva(r)} disabled={loading}>
                                     {r !== "original" ? (
                                         <div className={`ratio-preview ratio-preview-${r.replace(":", "x")}`} />
                                     ) : (
                                         <div className="ratio-preview" style={{ width: 40, height: 30, borderRadius: 4 }} />
                                     )}
-                                    <span className="ratio-label">{CANVA_TYPES[r].label}</span>
+                                    <span className="ratio-label">{CANVA_FORMAT_INFO[r].label}</span>
                                 </button>
                             ))}
                         </div>
