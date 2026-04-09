@@ -35,6 +35,7 @@ type Screen = "login" | "home" | "browser";
 
 const ROOT_FOLDER_ID = import.meta.env.VITE_ROOT_FOLDER_ID;
 const ROOT_FOLDER_NAME = import.meta.env.VITE_ROOT_FOLDER_NAME || "Kořen";
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 function getErrorMessage(error: unknown) {
     if (error instanceof Error) return error.message;
@@ -167,8 +168,7 @@ export default function App() {
     const [searchLoading, setSearchLoading] = useState(false);
     const [searchScope, setSearchScope] = useState<"folder" | "global">("global");
     const [indexingProgress, setIndexingProgress] = useState<{ done: number; total: number } | null>(null);
-    const [geminiKeyDialog, setGeminiKeyDialog] = useState(false);
-    const [geminiKeyInput, setGeminiKeyInput] = useState("");
+    const [totalIndexed, setTotalIndexed] = useState(0);
 
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const folderCache = useRef<Map<string, { data: DriveFile[]; ts: number }>>(new Map());
@@ -622,39 +622,43 @@ export default function App() {
 
     // ── AI Search ──
 
-    function getGeminiKey(): string {
-        return localStorage.getItem("gemini_api_key") ?? "";
-    }
-
-    function saveGeminiKey(key: string) {
-        localStorage.setItem("gemini_api_key", key);
+    function geminiKey(): string {
+        return GEMINI_API_KEY || localStorage.getItem("gemini_api_key") || "";
     }
 
     async function triggerIndexing(folderFiles: DriveFile[], folderId: string) {
-        const apiKey = getGeminiKey();
+        const apiKey = geminiKey();
         if (!apiKey) return;
         try {
             const unindexed = await getUnindexedFiles(db, folderFiles);
-            if (unindexed.length === 0) return;
+            if (unindexed.length === 0) {
+                // Count how many are indexed
+                const imageCount = folderFiles.filter(f => f.mimeType.startsWith("image/")).length;
+                setTotalIndexed(imageCount);
+                return;
+            }
 
             // Abort previous indexing
             indexAbortRef.current?.abort();
             const controller = new AbortController();
             indexAbortRef.current = controller;
 
+            const alreadyIndexed = folderFiles.filter(f => f.mimeType.startsWith("image/")).length - unindexed.length;
+            setTotalIndexed(alreadyIndexed);
             setIndexingProgress({ done: 0, total: unindexed.length });
 
             const result = await batchIndexImages(
                 db, unindexed, folderId, accessToken, apiKey,
-                (done, total) => setIndexingProgress({ done, total }),
+                (done, total) => {
+                    setIndexingProgress({ done, total });
+                    setTotalIndexed(alreadyIndexed + done);
+                },
                 controller.signal
             );
 
             if (!controller.signal.aborted) {
                 setIndexingProgress(null);
-                if (result.indexed > 0) {
-                    setMessage(`Zaindexováno ${result.indexed} obrázků${result.errors > 0 ? ` (${result.errors} chyb)` : ""}.`);
-                }
+                setTotalIndexed(alreadyIndexed + result.indexed);
             }
         } catch {
             setIndexingProgress(null);
@@ -690,31 +694,15 @@ export default function App() {
     }
 
     function handleSearchResultClick(result: ImageIndexDoc) {
-        // Find the file in the current file list or create a minimal DriveFile to preview
         const file = files.find(f => f.id === result.fileId);
         if (file) {
             openPreview(file);
         } else {
-            // File is in another folder — create a minimal object for preview
-            const minFile: DriveFile = {
+            openPreview({
                 id: result.fileId,
                 name: result.fileName,
-                mimeType: "image/jpeg", // default, will work for preview
-            };
-            openPreview(minFile);
-        }
-    }
-
-    function handleGeminiKeySave() {
-        const key = geminiKeyInput.trim();
-        if (!key) return;
-        saveGeminiKey(key);
-        setGeminiKeyDialog(false);
-        setGeminiKeyInput("");
-        setMessage("Gemini API klíč uložen. Indexace začne automaticky.");
-        // Trigger indexing for current folder
-        if (screen === "browser") {
-            triggerIndexing(files, currentFolderId);
+                mimeType: "image/jpeg",
+            });
         }
     }
 
@@ -827,16 +815,6 @@ export default function App() {
                                 <span className="tile-title">Nahrát</span>
                                 <span className="tile-desc">Vybrat fotku nebo video</span>
                             </button>
-                            <button className="home-tile" onClick={() => {
-                                if (!getGeminiKey()) { setGeminiKeyDialog(true); return; }
-                                setScreen("browser");
-                                handleOpenLibrary();
-                                setTimeout(() => document.getElementById("search-input")?.focus(), 300);
-                            }} disabled={loading}>
-                                <div className="tile-icon">{Icons.searchLg}</div>
-                                <span className="tile-title">AI Vyhledávání</span>
-                                <span className="tile-desc">Hledat obrázky podle obsahu</span>
-                            </button>
                             {userIsAdmin && (
                                 <button className="home-tile" onClick={() => { setAdminPanelOpen(true); refreshAccessConfig(); }} disabled={loading}>
                                     <div className="tile-icon">{Icons.users}</div>
@@ -864,83 +842,98 @@ export default function App() {
                             </nav>
 
                             {/* Search bar */}
-                            <div className="search-bar-wrap">
-                                <div className="search-bar">
-                                    <span className="search-bar-icon">{Icons.search}</span>
-                                    <input
-                                        id="search-input"
-                                        className="search-bar-input"
-                                        type="text"
-                                        placeholder="Hledat obrázky... (např. židle, les, auto)"
-                                        value={searchQuery}
-                                        onChange={(e) => handleSearchInput(e.target.value)}
-                                        onKeyDown={(e) => { if (e.key === "Escape") clearSearch(); }}
-                                    />
-                                    {searchQuery && (
-                                        <button className="search-bar-clear" onClick={clearSearch} title="Vymazat">
-                                            {Icons.closeSm}
-                                        </button>
-                                    )}
-                                    <div className="search-scope-toggle">
-                                        <button
-                                            className={`search-scope-btn ${searchScope === "folder" ? "search-scope-active" : ""}`}
-                                            onClick={() => { setSearchScope("folder"); if (searchQuery) handleSearchInput(searchQuery); }}
-                                            title="Jen tato složka"
-                                        >Složka</button>
-                                        <button
-                                            className={`search-scope-btn ${searchScope === "global" ? "search-scope-active" : ""}`}
-                                            onClick={() => { setSearchScope("global"); if (searchQuery) handleSearchInput(searchQuery); }}
-                                            title="Všechny složky"
-                                        >Vše</button>
+                            {geminiKey() && (
+                                <div className="search-bar-wrap">
+                                    <div className="search-bar">
+                                        <span className="search-bar-icon">{Icons.search}</span>
+                                        <input
+                                            id="search-input"
+                                            className="search-bar-input"
+                                            type="text"
+                                            placeholder="Hledat obrázky… např. židle, les, auto, modrá obloha"
+                                            value={searchQuery}
+                                            onChange={(e) => handleSearchInput(e.target.value)}
+                                            onKeyDown={(e) => { if (e.key === "Escape") clearSearch(); }}
+                                        />
+                                        {searchQuery && (
+                                            <button className="search-bar-clear" onClick={clearSearch} title="Vymazat">
+                                                {Icons.closeSm}
+                                            </button>
+                                        )}
+                                        {searchLoading && <span className="spinner" style={{ width: 14, height: 14 }} />}
+                                        <div className="search-scope-toggle">
+                                            <button
+                                                className={`search-scope-btn ${searchScope === "folder" ? "search-scope-active" : ""}`}
+                                                onClick={() => { setSearchScope("folder"); if (searchQuery) handleSearchInput(searchQuery); }}
+                                            >Složka</button>
+                                            <button
+                                                className={`search-scope-btn ${searchScope === "global" ? "search-scope-active" : ""}`}
+                                                onClick={() => { setSearchScope("global"); if (searchQuery) handleSearchInput(searchQuery); }}
+                                            >Vše</button>
+                                        </div>
                                     </div>
-                                    {!getGeminiKey() && (
-                                        <button className="btn btn-accent btn-sm" onClick={() => setGeminiKeyDialog(true)} title="Nastavit API klíč">
-                                            {Icons.key} API klíč
-                                        </button>
+                                    {indexingProgress && (
+                                        <div className="indexing-status">
+                                            <div className="indexing-bar">
+                                                <div className="indexing-bar-fill" style={{ width: `${(indexingProgress.done / indexingProgress.total) * 100}%` }} />
+                                            </div>
+                                            <span>Indexuji {indexingProgress.done}/{indexingProgress.total} obrázků…</span>
+                                        </div>
+                                    )}
+                                    {!indexingProgress && totalIndexed > 0 && !searchQuery && (
+                                        <div className="indexing-status">
+                                            <span className="index-ready-dot" />
+                                            <span>{totalIndexed} obrázků zaindexováno — vyhledávání připraveno</span>
+                                        </div>
                                     )}
                                 </div>
-                                {indexingProgress && (
-                                    <div className="indexing-status">
-                                        <span className="spinner" style={{ width: 12, height: 12 }} />
-                                        <span>Indexuji obrázky… {indexingProgress.done}/{indexingProgress.total}</span>
-                                    </div>
-                                )}
-                            </div>
+                            )}
 
-                            {/* Search results */}
+                            {/* Search results — image grid */}
                             {searchResults !== null && (
-                                <div className="search-results">
+                                <div className="search-results-panel">
                                     <div className="search-results-header">
                                         <span className="search-results-count">
-                                            {searchLoading ? "Hledám…" :
-                                                searchResults.length === 0 ? `Žádné výsledky pro „${searchQuery}"` :
-                                                    `${searchResults.length} ${searchResults.length === 1 ? "výsledek" : searchResults.length < 5 ? "výsledky" : "výsledků"}`}
+                                            {searchResults.length === 0
+                                                ? `Nic nenalezeno pro „${searchQuery}"`
+                                                : `${searchResults.length} ${searchResults.length === 1 ? "nalezen" : "nalezeno"}`}
                                         </span>
-                                        <button className="btn btn-ghost btn-sm" onClick={clearSearch}>Zavřít hledání</button>
+                                        <button className="btn btn-ghost btn-sm" onClick={clearSearch}>{Icons.closeSm} Zavřít</button>
                                     </div>
                                     {searchResults.length > 0 && (
-                                        <div className="search-results-grid">
-                                            {searchResults.map((result) => (
-                                                <button
-                                                    key={result.fileId}
-                                                    className="search-result-card"
-                                                    onClick={() => handleSearchResultClick(result)}
-                                                >
-                                                    <div className="search-result-icon">{Icons.file}</div>
-                                                    <div className="search-result-info">
-                                                        <span className="search-result-name">{result.fileName}</span>
-                                                        <span className="search-result-desc">
-                                                            {result.descriptionCs.slice(0, 100)}
-                                                            {result.descriptionCs.length > 100 ? "…" : ""}
-                                                        </span>
-                                                        <div className="search-result-tags">
-                                                            {result.tags.slice(0, 6).map((tag, i) => (
+                                        <div className="search-grid">
+                                            {searchResults.map((result) => {
+                                                // Find corresponding DriveFile for thumbnail
+                                                const driveFile = files.find(f => f.id === result.fileId);
+                                                const thumbUrl = driveFile?.thumbnailLink?.replace(/=s\d+/, "=s300");
+                                                return (
+                                                    <button
+                                                        key={result.fileId}
+                                                        className="search-grid-item"
+                                                        onClick={() => handleSearchResultClick(result)}
+                                                        title={result.descriptionCs}
+                                                    >
+                                                        <div className="search-grid-thumb">
+                                                            {thumbUrl ? (
+                                                                <img
+                                                                    src={thumbUrl}
+                                                                    alt={result.fileName}
+                                                                    crossOrigin="anonymous"
+                                                                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                                                                />
+                                                            ) : (
+                                                                <div className="search-grid-thumb-placeholder">{Icons.file}</div>
+                                                            )}
+                                                        </div>
+                                                        <span className="search-grid-name">{result.fileName}</span>
+                                                        <div className="search-grid-tags">
+                                                            {result.tags.slice(0, 3).map((tag, i) => (
                                                                 <span key={i} className="search-tag">{tag}</span>
                                                             ))}
                                                         </div>
-                                                    </div>
-                                                </button>
-                                            ))}
+                                                    </button>
+                                                );
+                                            })}
                                         </div>
                                     )}
                                 </div>
@@ -1218,33 +1211,6 @@ export default function App() {
 
                         <div className="dialog-actions">
                             <button className="btn btn-primary" onClick={() => setAdminPanelOpen(false)}>Zavřít</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ── Gemini API Key dialog ── */}
-            {geminiKeyDialog && (
-                <div className="overlay" onClick={() => setGeminiKeyDialog(false)}>
-                    <div className="dialog" onClick={(e) => e.stopPropagation()}>
-                        <div className="dialog-icon-accent"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></div>
-                        <h2>Gemini API klíč</h2>
-                        <p className="dialog-desc">
-                            Pro AI vyhledávání obrázků potřebuješ Gemini API klíč (zdarma).<br />
-                            Získej ho na <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>aistudio.google.com/apikey</a>
-                        </p>
-                        <input
-                            className="dialog-input"
-                            type="text"
-                            placeholder="AIza..."
-                            value={geminiKeyInput}
-                            onChange={(e) => setGeminiKeyInput(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === "Enter") handleGeminiKeySave(); if (e.key === "Escape") setGeminiKeyDialog(false); }}
-                            autoFocus
-                        />
-                        <div className="dialog-actions">
-                            <button className="btn btn-ghost" onClick={() => setGeminiKeyDialog(false)}>Zrušit</button>
-                            <button className="btn btn-primary" onClick={handleGeminiKeySave} disabled={!geminiKeyInput.trim()}>Uložit</button>
                         </div>
                     </div>
                 </div>
