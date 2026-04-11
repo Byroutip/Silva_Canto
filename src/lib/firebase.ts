@@ -35,6 +35,16 @@ const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope("https://www.googleapis.com/auth/drive");
 googleProvider.setCustomParameters({ prompt: "select_account" });
 
+const DRIVE_TOKEN_KEY = "drive_access_token";
+
+export function saveDriveToken(token: string): void {
+    sessionStorage.setItem(DRIVE_TOKEN_KEY, token);
+}
+
+export function getSavedDriveToken(): string | null {
+    return sessionStorage.getItem(DRIVE_TOKEN_KEY);
+}
+
 export async function loginWithGoogle(): Promise<{
     user: User;
     accessToken: string;
@@ -44,7 +54,24 @@ export async function loginWithGoogle(): Promise<{
     if (!credential?.accessToken) {
         throw new Error("Nepodařilo se získat Google access token.");
     }
+    saveDriveToken(credential.accessToken);
     return { user: result.user, accessToken: credential.accessToken };
+}
+
+// Try to restore session silently after page reload (e.g. after OAuth redirect)
+export function waitForAuthRestore(): Promise<{ user: User; accessToken: string } | null> {
+    return new Promise((resolve) => {
+        const unsub = auth.onAuthStateChanged((user) => {
+            unsub();
+            if (!user) { resolve(null); return; }
+            const token = getSavedDriveToken();
+            if (token) {
+                resolve({ user, accessToken: token });
+            } else {
+                resolve(null);
+            }
+        });
+    });
 }
 
 export async function logoutFirebase(): Promise<void> {

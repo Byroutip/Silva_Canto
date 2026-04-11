@@ -21,6 +21,7 @@ import {
     removeAllowedEmail,
     addAdmin,
     removeAdmin,
+    waitForAuthRestore,
     db,
     type AccessConfig,
 } from "./lib/firebase";
@@ -767,50 +768,61 @@ export default function App() {
         return null;
     });
 
-    // Auto-login with Google when Canva callback detected, then execute design
+    // Auto-restore session + execute Canva callback after OAuth redirect
     useEffect(() => {
         if (!canvaCallbackPending) return;
-        // Auto-trigger Google login silently
         setLoading(true);
         setMessage("Dokončuji přihlášení do Canvy…");
-        loginWithGoogle()
-            .then(async ({ user, accessToken: token }) => {
-                const email = user.email?.toLowerCase() ?? "";
-                await initAccessConfig(email);
-                const config = await getAccessConfig();
-                if (!isEmailAllowed(config, email)) {
-                    setAccessDenied(true);
-                    setUserEmail(email);
-                    await logoutFirebase();
-                    setLoading(false);
-                    return;
-                }
-                setAccessToken(token);
-                setUserEmail(email);
-                setUserIsAdmin(isAdmin(config, email));
-                setAccessConfig(config);
-                setScreen("home");
-                setLoading(false);
 
-                const { code, state } = canvaCallbackPending;
-                setCanvaCallbackPending(null);
-                try {
-                    await handleCanvaCallback(code, state, CANVA_REDIRECT_URI);
-                    const pending = getPendingAction();
-                    if (pending) {
-                        const file: DriveFile = { id: pending.fileId, name: pending.fileName, mimeType: pending.mimeType };
-                        await executeCanvaDesign(file, pending.format as CanvaFormat, token);
-                    } else {
-                        setMessage("Canva propojeno.");
-                    }
-                } catch (err) {
-                    setMessage(`Canva autorizace selhala: ${getErrorMessage(err)}`);
-                }
-            })
-            .catch((err) => {
+        const run = async () => {
+            // Try to restore Firebase session + Drive token silently first
+            let token: string | null = null;
+            let userObj: import("firebase/auth").User | null = null;
+
+            const restored = await waitForAuthRestore();
+            if (restored) {
+                token = restored.accessToken;
+                userObj = restored.user;
+            } else {
+                // Fall back to popup login
+                const result = await loginWithGoogle();
+                token = result.accessToken;
+                userObj = result.user;
+            }
+
+            const email = userObj.email?.toLowerCase() ?? "";
+            await initAccessConfig(email);
+            const config = await getAccessConfig();
+            if (!isEmailAllowed(config, email)) {
+                setAccessDenied(true);
+                setUserEmail(email);
+                await logoutFirebase();
                 setLoading(false);
-                setMessage(`Přihlášení selhalo: ${getErrorMessage(err)}`);
-            });
+                return;
+            }
+            setAccessToken(token);
+            setUserEmail(email);
+            setUserIsAdmin(isAdmin(config, email));
+            setAccessConfig(config);
+            setScreen("home");
+            setLoading(false);
+
+            const { code, state } = canvaCallbackPending;
+            setCanvaCallbackPending(null);
+            await handleCanvaCallback(code, state, CANVA_REDIRECT_URI);
+            const pending = getPendingAction();
+            if (pending) {
+                const file: DriveFile = { id: pending.fileId, name: pending.fileName, mimeType: pending.mimeType };
+                await executeCanvaDesign(file, pending.format as CanvaFormat, token);
+            } else {
+                setMessage("Canva propojeno.");
+            }
+        };
+
+        run().catch((err) => {
+            setLoading(false);
+            setMessage(`Chyba: ${getErrorMessage(err)}`);
+        });
     }, [canvaCallbackPending]);
 
     // ── AI Search ──
