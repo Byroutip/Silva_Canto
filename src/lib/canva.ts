@@ -183,29 +183,21 @@ async function uploadAsset(
     onProgress?: (msg: string) => void
 ): Promise<string> {
     const token = await getValidToken();
-    // Convert ArrayBuffer to base64 in chunks to avoid call stack overflow on large images
-    const bytes = new Uint8Array(imageData);
-    let binary = "";
-    const chunkSize = 8192;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-    const base64Image = btoa(binary);
+    // Encode filename as base64 for the metadata header
     const nameBase64 = btoa(unescape(encodeURIComponent(fileName)));
 
     onProgress?.("Nahrávám obrázek do Canvy…");
 
+    // Send image as raw binary — no base64 conversion needed
     const res = await fetch(`${PROXY_BASE}/upload-asset`, {
         method: "POST",
         headers: {
-            "Content-Type": "application/json",
             "Authorization": `Bearer ${token}`,
+            "Content-Type": mimeType === "image/png" ? "image/png" : "image/jpeg",
+            "X-Asset-Name-Base64": nameBase64,
+            "X-Asset-Mime-Type": mimeType,
         },
-        body: JSON.stringify({
-            image_base64: base64Image,
-            name_base64: nameBase64,
-            mime_type: mimeType,
-        }),
+        body: imageData,
     });
 
     if (!res.ok) {
