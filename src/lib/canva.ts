@@ -5,7 +5,7 @@
 
 const CANVA_CLIENT_ID = "OC-AZ1zT6lLCKyQ";
 const CANVA_AUTH_URL = "https://www.canva.com/api/oauth/authorize";
-const CANVA_SCOPES = "asset:write design:content:write design:content:read";
+const CANVA_SCOPES = "asset:read asset:write design:content:read design:content:write";
 
 const PROXY_BASE = "https://canto-canva-proxy.holy-leaf-3952.workers.dev";
 
