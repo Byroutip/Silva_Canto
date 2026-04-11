@@ -183,8 +183,15 @@ async function uploadAsset(
     onProgress?: (msg: string) => void
 ): Promise<string> {
     const token = await getValidToken();
-    const base64Image = btoa(String.fromCharCode(...new Uint8Array(imageData)));
-    const nameBase64 = btoa(fileName);
+    // Convert ArrayBuffer to base64 in chunks to avoid call stack overflow on large images
+    const bytes = new Uint8Array(imageData);
+    let binary = "";
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const base64Image = btoa(binary);
+    const nameBase64 = btoa(unescape(encodeURIComponent(fileName)));
 
     onProgress?.("Nahrávám obrázek do Canvy…");
 
